@@ -1001,7 +1001,10 @@ namespace Sintering
         params.advection_data.mr);
 
       // Advection operator
-      AdvectionOperator<dim, Number, VectorizedArrayType> advection_operator(
+      using AdvectionOperatorType =
+        AdvectionOperator<dim, Number, VectorizedArrayType>;
+
+      AdvectionOperatorType advection_operator(
         params.advection_data.k,
         params.advection_data.cgb,
         params.advection_data.ceq,
@@ -1054,6 +1057,7 @@ namespace Sintering
               std::make_unique<ResidualWrapperAdvection<dim,
                                                         Number,
                                                         VectorizedArrayType,
+                                                        AdvectionOperatorType,
                                                         NonLinearOperator,
                                                         true>>(
                 advection_operator, nonlinear_operator);
@@ -1070,6 +1074,7 @@ namespace Sintering
               std::make_unique<ResidualWrapperAdvection<dim,
                                                         Number,
                                                         VectorizedArrayType,
+                                                        AdvectionOperatorType,
                                                         NonLinearOperator,
                                                         false>>(
                 advection_operator, nonlinear_operator);
