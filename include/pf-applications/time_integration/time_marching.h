@@ -242,11 +242,29 @@ namespace TimeIntegration
                   n_iterations = linear_solver->solve(dst, src);
                   break;
                 }
-              catch (const SolverControl::NoConvergence &)
+              catch (const SolverControl::NoConvergence &e)
                 {
                   if (!retry_on_linear_failure ||
                       attempt >= nonlinear_params.linear_failure_retries)
-                    throw;
+                    {
+                      // The iterate of the last GMRES cycle is in dst.
+                      if (e.last_residual <=
+                          nonlinear_params.linear_accept_reduction *
+                            solver_control_l->initial_value())
+                        {
+                          if (stream.is_active())
+                            stream << " - Linear solver failed, accepting "
+                                   << "inexact solution (residual reduction "
+                                   << e.last_residual /
+                                        solver_control_l->initial_value()
+                                   << ")" << std::endl;
+
+                          n_iterations = e.last_step;
+                          break;
+                        }
+
+                      throw;
+                    }
 
                   // keep the failed attempt in the statistics
                   statistics.increment_linear_iterations(
