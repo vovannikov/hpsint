@@ -26,6 +26,9 @@
 #include <pf-applications/lac/jacobian_operator.h>
 #include <pf-applications/lac/solvers_nonlinear_snes.h>
 
+#include <algorithm>
+#include <limits>
+
 namespace NonLinearSolvers
 {
   using namespace dealii;
@@ -180,6 +183,48 @@ namespace NonLinearSolvers
 
 
 
+  /**
+   * Requests a preconditioner update if the number of linear iterations grew
+   * by more than a factor relative to the minimum seen since the last reset().
+   * A factor of zero disables the check.
+   */
+  class LinearIterationGrowthMonitor
+  {
+  public:
+    explicit LinearIterationGrowthMonitor(const double growth_factor = 0.)
+      : growth_factor(growth_factor)
+    {}
+
+    void
+    reset()
+    {
+      min_iter  = std::numeric_limits<unsigned int>::max();
+      last_iter = 0;
+    }
+
+    void
+    record(const unsigned int n_iter)
+    {
+      last_iter = n_iter;
+      min_iter  = std::min(min_iter, n_iter);
+    }
+
+    bool
+    update_required() const
+    {
+      return growth_factor > 0. &&
+             min_iter != std::numeric_limits<unsigned int>::max() &&
+             last_iter > growth_factor * std::max(min_iter, 1u);
+    }
+
+  private:
+    double       growth_factor;
+    unsigned int min_iter  = std::numeric_limits<unsigned int>::max();
+    unsigned int last_iter = 0;
+  };
+
+
+
   class ExcNewtonDidNotConverge : public dealii::ExceptionBase
   {
   public:
@@ -223,7 +268,8 @@ namespace NonLinearSolvers
     std::function<void(const VectorType &)>               setup_jacobian = {};
     std::function<void(const VectorType &)> setup_preconditioner         = {};
     std::function<unsigned int(const VectorType &, VectorType &)>
-      solve_with_jacobian = {};
+                          solve_with_jacobian             = {};
+    std::function<bool()> update_preconditioner_predicate = {};
     std::function<SolverControl::State(const unsigned int,
                                        const double,
                                        const VectorType &,
@@ -280,7 +326,9 @@ namespace NonLinearSolvers
             (history_newton_iterations % solver_data.threshold_newton_iter ==
              0) ||
             (history_linear_iterations_last >
-             solver_data.threshold_linear_iter);
+             solver_data.threshold_linear_iter) ||
+            (this->update_preconditioner_predicate &&
+             this->update_preconditioner_predicate());
 
           this->setup_jacobian(dst);
 
