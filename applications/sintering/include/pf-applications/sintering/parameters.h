@@ -1072,6 +1072,12 @@ namespace Sintering
       prm.add_parameter("LinearFailureRetries",
                         nonlinear_data.linear_failure_retries,
                         "Maximum number of retries after a linear failure.");
+      prm.add_parameter(
+        "LinearAcceptReduction",
+        nonlinear_data.linear_accept_reduction,
+        "Accept the result of a failed linear solve if the residual was reduced "
+        "at least by this factor; 0 disables.",
+        Patterns::Double(0., 1.));
 
       prm.add_parameter("NonLinearSolverType",
                         nonlinear_data.nonlinear_solver_type,
