@@ -1065,6 +1065,13 @@ namespace Sintering
       prm.add_parameter("NewtonReusePreconditioner",
                         nonlinear_data.newton_reuse_preconditioner);
       prm.add_parameter("NewtonUseDamping", nonlinear_data.newton_use_damping);
+      prm.add_parameter(
+        "LinearFailureRebuildPreconditioner",
+        nonlinear_data.linear_failure_rebuild_preconditioner,
+        "Rebuild the preconditioner and retry if the linear solver fails.");
+      prm.add_parameter("LinearFailureRetries",
+                        nonlinear_data.linear_failure_retries,
+                        "Maximum number of retries after a linear failure.");
 
       prm.add_parameter("NonLinearSolverType",
                         nonlinear_data.nonlinear_solver_type,
