@@ -21,6 +21,9 @@ namespace LinearSolvers
 {
   struct GMRESData
   {
-    std::string orthogonalization_strategy = "classical gram schmidt";
+    std::string  orthogonalization_strategy = "classical gram schmidt";
+    unsigned int max_basis_size             = 30;
+    bool         right_preconditioning      = false;
+    bool         use_fgmres                 = false;
   };
 } // namespace LinearSolvers

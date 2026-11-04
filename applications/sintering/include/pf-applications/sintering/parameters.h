@@ -1125,6 +1125,15 @@ namespace Sintering
                         "Orthogonalization strategy",
                         Patterns::Selection(
                           "classical gram schmidt|modified gram schmidt"));
+      prm.add_parameter("MaxBasisSize",
+                        nonlinear_data.gmres_data.max_basis_size,
+                        "GMRES restart length (Krylov basis size).");
+      prm.add_parameter("RightPreconditioning",
+                        nonlinear_data.gmres_data.right_preconditioning,
+                        "Use right instead of left preconditioning.");
+      prm.add_parameter("UseFGMRES",
+                        nonlinear_data.gmres_data.use_fgmres,
+                        "Use flexible GMRES (right preconditioning).");
       prm.leave_subsection();
 
       prm.leave_subsection();
