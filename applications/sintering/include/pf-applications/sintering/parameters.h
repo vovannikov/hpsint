@@ -1062,6 +1062,12 @@ namespace Sintering
                         nonlinear_data.newton_threshold_newton_iter);
       prm.add_parameter("NewtonThresholdLinearIterations",
                         nonlinear_data.newton_threshold_linear_iter);
+      prm.add_parameter(
+        "NewtonThresholdLinearGrowth",
+        nonlinear_data.newton_threshold_linear_growth,
+        "Rebuild the preconditioner if the linear iterations exceed this "
+        "multiple of the minimum in the current time step; 0 disables.",
+        Patterns::Double(0.));
       prm.add_parameter("NewtonReusePreconditioner",
                         nonlinear_data.newton_reuse_preconditioner);
       prm.add_parameter("NewtonUseDamping", nonlinear_data.newton_use_damping);

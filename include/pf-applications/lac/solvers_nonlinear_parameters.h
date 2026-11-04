@@ -48,11 +48,12 @@ namespace NonLinearSolvers
     std::string  l_solver         = "GMRES";
     unsigned int l_bisgstab_tries = 30;
 
-    bool         newton_do_update             = true;
-    unsigned int newton_threshold_newton_iter = 100;
-    unsigned int newton_threshold_linear_iter = 20;
-    bool         newton_reuse_preconditioner  = true;
-    bool         newton_use_damping           = true;
+    bool         newton_do_update               = true;
+    unsigned int newton_threshold_newton_iter   = 100;
+    unsigned int newton_threshold_linear_iter   = 20;
+    double       newton_threshold_linear_growth = 0.;
+    bool         newton_reuse_preconditioner    = true;
+    bool         newton_use_damping             = true;
 
     bool         linear_failure_rebuild_preconditioner = false;
     unsigned int linear_failure_retries                = 1;

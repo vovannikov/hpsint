@@ -131,6 +131,10 @@ namespace TimeIntegration
         nonlinear_params.l_solver != "Direct";
       const auto last_point = std::make_shared<VectorType>();
 
+      linear_growth_monitor = std::make_shared<LinearIterationGrowthMonitor>(
+        nonlinear_params.newton_threshold_linear_growth);
+      const auto growth_monitor = linear_growth_monitor;
+
 
       // Lambda to compute residual
       const auto nl_residual = [&](const auto &src, auto &dst) {
@@ -223,6 +227,7 @@ namespace TimeIntegration
       const auto nl_solve_with_jacobian =
         [&,
          last_point,
+         growth_monitor,
          nl_setup_preconditioner,
          retry_on_linear_failure](const auto &src, auto &dst) {
           ScopedName sc("solve_with_jacobian");
@@ -298,6 +303,8 @@ namespace TimeIntegration
             }
 
           statistics.increment_linear_iterations(n_iterations);
+
+          growth_monitor->record(n_iterations);
 
           return n_iterations;
         };
@@ -423,6 +430,9 @@ namespace TimeIntegration
           non_linear_solver.setup_jacobian      = nl_setup_jacobian;
           non_linear_solver.solve_with_jacobian = nl_solve_with_jacobian;
 
+          non_linear_solver.update_preconditioner_predicate =
+            [growth_monitor]() { return growth_monitor->update_required(); };
+
           if (nonlinear_params.l_solver != "Direct")
             non_linear_solver.setup_preconditioner = nl_setup_preconditioner;
 
@@ -513,6 +523,9 @@ namespace TimeIntegration
             return 0;
           };
 
+          non_linear_solver.update_preconditioner_predicate =
+            [growth_monitor]() { return growth_monitor->update_required(); };
+
           if (nonlinear_params.verbosity >= 1) // TODO
             non_linear_solver.check_iteration_status =
               nl_check_iteration_status;
@@ -584,6 +597,7 @@ namespace TimeIntegration
     void
     make_step(VectorType &current_solution) override
     {
+      linear_growth_monitor->reset();
       non_linear_solver_executor->solve(current_solution);
     }
 
@@ -595,6 +609,8 @@ namespace TimeIntegration
 
   private:
     std::unique_ptr<SolverControl> solver_control_l;
+
+    std::shared_ptr<LinearIterationGrowthMonitor> linear_growth_monitor;
 
     std::unique_ptr<LinearSolvers::LinearSolverBase<Number>> linear_solver;
 
