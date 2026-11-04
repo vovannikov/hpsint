@@ -124,6 +124,13 @@ namespace TimeIntegration
                                             nonlinear_params,
                                             nonlinear_params.l_solver);
 
+      // Linearization point is kept for rebuilding the preconditioner after a
+      // linear solver failure; shared since the lambdas outlive this scope.
+      const bool retry_on_linear_failure =
+        nonlinear_params.linear_failure_rebuild_preconditioner &&
+        nonlinear_params.l_solver != "Direct";
+      const auto last_point = std::make_shared<VectorType>();
+
 
       // Lambda to compute residual
       const auto nl_residual = [&](const auto &src, auto &dst) {
@@ -137,12 +144,18 @@ namespace TimeIntegration
 
       // Lambda to set up jacobian
       const auto nl_setup_jacobian =
-        [&, slp = std::move(setup_linearization_point), nl_residual](
-          const auto &current_u) {
+        [&,
+         slp = std::move(setup_linearization_point),
+         nl_residual,
+         last_point,
+         retry_on_linear_failure](const auto &current_u) {
           ScopedName sc("setup_jacobian");
           MyScope    scope(timer, sc);
 
           slp(current_u);
+
+          if (retry_on_linear_failure)
+            *last_point = current_u;
 
           // TODO disable this feature for a while, fix later
           // nonlinear_operator.update_state(current_u);
@@ -207,38 +220,69 @@ namespace TimeIntegration
         };
 
       // Lambda to solve system using jacobian
-      const auto nl_solve_with_jacobian = [&](const auto &src, auto &dst) {
-        ScopedName sc("solve_with_jacobian");
-        MyScope    scope(timer, sc);
+      const auto nl_solve_with_jacobian =
+        [&,
+         last_point,
+         nl_setup_preconditioner,
+         retry_on_linear_failure](const auto &src, auto &dst) {
+          ScopedName sc("solve_with_jacobian");
+          MyScope    scope(timer, sc);
 
-        // note: we mess with the input here, since we know that Newton does not
-        // use the content anymore
-        for (unsigned int b = 0; b < src.n_blocks(); ++b)
-          constraints.set_zero(const_cast<VectorType &>(src).block(b));
+          // note: we mess with the input here, since we know that Newton does
+          // not use the content anymore
+          for (unsigned int b = 0; b < src.n_blocks(); ++b)
+            constraints.set_zero(const_cast<VectorType &>(src).block(b));
 
-        const unsigned int n_iterations = linear_solver->solve(dst, src);
+          unsigned int n_iterations = 0;
 
-        for (unsigned int b = 0; b < src.n_blocks(); ++b)
-          constraints.distribute(dst.block(b));
+          for (unsigned int attempt = 0;; ++attempt)
+            {
+              try
+                {
+                  n_iterations = linear_solver->solve(dst, src);
+                  break;
+                }
+              catch (const SolverControl::NoConvergence &)
+                {
+                  if (!retry_on_linear_failure ||
+                      attempt >= nonlinear_params.linear_failure_retries)
+                    throw;
 
-        if (nonlinear_params.verbosity >= 2 &&
-            !solver_control_l->get_history_data().empty())
-          {
-            stream << " - l_res_abs: ";
-            for (const auto res : solver_control_l->get_history_data())
-              stream << res << " ";
-            stream << std::endl;
+                  // keep the failed attempt in the statistics
+                  statistics.increment_linear_iterations(
+                    solver_control_l->last_step());
 
-            std::vector<double> &res_history =
-              const_cast<std::vector<double> &>(
-                solver_control_l->get_history_data());
-            res_history.clear();
-          }
+                  if (stream.is_active())
+                    stream << " - Linear solver failed, rebuilding "
+                           << "preconditioner and retrying" << std::endl;
 
-        statistics.increment_linear_iterations(n_iterations);
+                  nl_setup_preconditioner(*last_point);
 
-        return n_iterations;
-      };
+                  dst = 0.;
+                }
+            }
+
+          for (unsigned int b = 0; b < src.n_blocks(); ++b)
+            constraints.distribute(dst.block(b));
+
+          if (nonlinear_params.verbosity >= 2 &&
+              !solver_control_l->get_history_data().empty())
+            {
+              stream << " - l_res_abs: ";
+              for (const auto res : solver_control_l->get_history_data())
+                stream << res << " ";
+              stream << std::endl;
+
+              std::vector<double> &res_history =
+                const_cast<std::vector<double> &>(
+                  solver_control_l->get_history_data());
+              res_history.clear();
+            }
+
+          statistics.increment_linear_iterations(n_iterations);
+
+          return n_iterations;
+        };
 
       const auto nl_check_iteration_status =
         [&,

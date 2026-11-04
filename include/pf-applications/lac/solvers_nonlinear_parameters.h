@@ -54,6 +54,9 @@ namespace NonLinearSolvers
     bool         newton_reuse_preconditioner  = true;
     bool         newton_use_damping           = true;
 
+    bool         linear_failure_rebuild_preconditioner = false;
+    unsigned int linear_failure_retries                = 1;
+
     std::string nonlinear_solver_type = "damped";
 
     bool fdm_jacobian_approximation       = false;
