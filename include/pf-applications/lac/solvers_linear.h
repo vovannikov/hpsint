@@ -91,19 +91,36 @@ namespace LinearSolvers
     {
       MyScope scope(timer, "gmres::solve");
 
-      typename SolverGMRES<T>::AdditionalData additional_data;
+      LinearAlgebra::OrthogonalizationStrategy orthogonalization_strategy;
 
       if (data.orthogonalization_strategy == "classical gram schmidt")
-        additional_data.orthogonalization_strategy =
+        orthogonalization_strategy =
           LinearAlgebra::OrthogonalizationStrategy::classical_gram_schmidt;
       else if (data.orthogonalization_strategy == "modified gram schmidt")
-        additional_data.orthogonalization_strategy =
+        orthogonalization_strategy =
           LinearAlgebra::OrthogonalizationStrategy::modified_gram_schmidt;
       else
         AssertThrow(false, ExcNotImplemented());
 
-      SolverGMRES<T> solver(solver_control, additional_data);
-      solver.solve(op, dst, src, preconditioner);
+      if (data.use_fgmres)
+        {
+          typename SolverFGMRES<T>::AdditionalData additional_data(
+            data.max_basis_size, orthogonalization_strategy);
+
+          SolverFGMRES<T> solver(solver_control, additional_data);
+          solver.solve(op, dst, src, preconditioner);
+        }
+      else
+        {
+          typename SolverGMRES<T>::AdditionalData additional_data;
+          additional_data.orthogonalization_strategy =
+            orthogonalization_strategy;
+          additional_data.max_basis_size        = data.max_basis_size;
+          additional_data.right_preconditioning = data.right_preconditioning;
+
+          SolverGMRES<T> solver(solver_control, additional_data);
+          solver.solve(op, dst, src, preconditioner);
+        }
 
       return solver_control.last_step();
     }
@@ -290,11 +307,13 @@ namespace LinearSolvers
     SolverBicgstabWrapper(const Operator       &op,
                           const Preconditioner &preconditioner,
                           SolverControl        &solver_control,
-                          const unsigned int    max_bicgsteps)
+                          const unsigned int    max_bicgsteps,
+                          const GMRESData      &gmres_data = GMRESData())
       : op(op)
       , preconditioner(preconditioner)
       , solver_control(solver_control)
       , max_bicgsteps(max_bicgsteps)
+      , gmres_data(gmres_data)
     {}
 
     unsigned int
@@ -343,7 +362,12 @@ namespace LinearSolvers
           dst.copy_locally_owned_data_from(dst_copy);
 
           // solve with GMRES
-          SolverGMRES<T> solver(solver_control);
+          typename SolverGMRES<T>::AdditionalData additional_data;
+          additional_data.max_basis_size = gmres_data.max_basis_size;
+          additional_data.right_preconditioning =
+            gmres_data.right_preconditioning;
+
+          SolverGMRES<T> solver(solver_control, additional_data);
           solver.solve(op, dst, src, preconditioner);
 
           return solver_control.last_step() + max_bicgsteps;
@@ -354,6 +378,7 @@ namespace LinearSolvers
     const Preconditioner &preconditioner;
     SolverControl        &solver_control;
     const unsigned int    max_bicgsteps;
+    const GMRESData       gmres_data;
 
     mutable MyTimerOutput timer;
   };
@@ -443,7 +468,8 @@ namespace LinearSolvers
         jacobian_operator,
         preconditioner,
         solver_control_l,
-        params.l_bisgstab_tries);
+        params.l_bisgstab_tries,
+        params.gmres_data);
 
     AssertThrow(false,
                 ExcMessage("Linear solver << " + label + " >> not known!"));
