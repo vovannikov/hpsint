@@ -88,17 +88,10 @@ namespace TimeIntegration
       const bool print_stats = true)
     {
       // Create linear solver control
-      if (true) // TODO: make parameter
-        {
-          solver_control_l =
-            std::make_unique<ReductionControl>(nonlinear_params.l_max_iter,
-                                               nonlinear_params.l_abs_tol,
-                                               nonlinear_params.l_rel_tol);
-        }
-      else
-        {
-          solver_control_l = std::make_unique<IterationNumberControl>(10);
-        }
+      solver_control_l =
+        std::make_unique<ReductionControl>(nonlinear_params.l_max_iter,
+                                           nonlinear_params.l_abs_tol,
+                                           nonlinear_params.l_rel_tol);
 
       // Enable tracking residual evolution
       if (nonlinear_params.verbosity >= 2) // TODO
@@ -229,9 +222,24 @@ namespace TimeIntegration
          last_point,
          growth_monitor,
          nl_setup_preconditioner,
-         retry_on_linear_failure](const auto &src, auto &dst) {
+         retry_on_linear_failure](const auto  &src,
+                                  auto        &dst,
+                                  const double tolerance = 0.) {
           ScopedName sc("solve_with_jacobian");
           MyScope    scope(timer, sc);
+
+          // A positive tolerance (forcing term) from the nonlinear solver
+          // overrides LinearRelativeTolerance for this solve only
+          if (tolerance > 0.)
+            {
+              solver_control_l->set_reduction(tolerance);
+
+              if (nonlinear_params.verbosity >= 2)
+                stream << " - l_rel_tol: " << tolerance << std::endl;
+            }
+          const auto restore_reduction = [this, &nonlinear_params]() {
+            this->solver_control_l->set_reduction(nonlinear_params.l_rel_tol);
+          };
 
           // note: we mess with the input here, since we know that Newton does
           // not use the content anymore
@@ -268,6 +276,7 @@ namespace TimeIntegration
                           break;
                         }
 
+                      restore_reduction();
                       throw;
                     }
 
@@ -284,6 +293,8 @@ namespace TimeIntegration
                   dst = 0.;
                 }
             }
+
+          restore_reduction();
 
           for (unsigned int b = 0; b < src.n_blocks(); ++b)
             constraints.distribute(dst.block(b));
@@ -468,6 +479,26 @@ namespace TimeIntegration
            * problem, so no need to waste time on them. */
           newton_params.set("Rescue Bad Newton Solve", false);
 
+          newton_params.set("Forcing Term Method",
+                            nonlinear_params.nox_data.forcing_term_method);
+          newton_params.set(
+            "Forcing Term Initial Tolerance",
+            nonlinear_params.nox_data.forcing_term_initial_tolerance);
+          newton_params.set(
+            "Forcing Term Minimum Tolerance",
+            nonlinear_params.nox_data.forcing_term_minimum_tolerance);
+          newton_params.set(
+            "Forcing Term Maximum Tolerance",
+            nonlinear_params.nox_data.forcing_term_maximum_tolerance);
+          newton_params.set("Forcing Term Alpha",
+                            nonlinear_params.nox_data.forcing_term_alpha);
+          newton_params.set("Forcing Term Gamma",
+                            nonlinear_params.nox_data.forcing_term_gamma);
+
+          // Tolerance passed to the linear solve for "Constant" forcing
+          newton_params.sublist("Linear Solver")
+            .set("Tolerance", nonlinear_params.l_rel_tol);
+
           auto &search_parameters =
             non_linear_parameters->sublist("Line Search");
           search_parameters.set("Method",
@@ -513,8 +544,7 @@ namespace TimeIntegration
             [nl_solve_with_jacobian](const auto  &src,
                                      auto        &dst,
                                      const double tolerance) {
-              (void)tolerance;
-              return nl_solve_with_jacobian(src, dst);
+              return nl_solve_with_jacobian(src, dst, tolerance);
             };
 
           non_linear_solver.apply_jacobian = [&j_op](const auto &src,
@@ -571,8 +601,7 @@ namespace TimeIntegration
             [nl_solve_with_jacobian](const auto  &src,
                                      auto        &dst,
                                      const double tolerance) {
-              (void)tolerance;
-              return nl_solve_with_jacobian(src, dst);
+              return nl_solve_with_jacobian(src, dst, tolerance);
             };
 
           non_linear_solver.apply_jacobian = [&j_op](const auto &src,
@@ -608,7 +637,7 @@ namespace TimeIntegration
     }
 
   private:
-    std::unique_ptr<SolverControl> solver_control_l;
+    std::unique_ptr<ReductionControl> solver_control_l;
 
     std::shared_ptr<LinearIterationGrowthMonitor> linear_growth_monitor;
 
