@@ -1120,6 +1120,22 @@ namespace Sintering
         "Nonlinear solver type",
         Patterns::Selection(
           "Newton|Line Search Based|Trust Region Based|Inexact Trust Region Based|Tensor Based"));
+      prm.add_parameter(
+        "ForcingTermMethod",
+        nonlinear_data.nox_data.forcing_term_method,
+        "Linear solver tolerance: Constant (LinearRelativeTolerance) or "
+        "Eisenstat-Walker Type 1/Type 2",
+        Patterns::Selection("Constant|Type 1|Type 2"));
+      prm.add_parameter("ForcingTermInitialTolerance",
+                        nonlinear_data.nox_data.forcing_term_initial_tolerance);
+      prm.add_parameter("ForcingTermMinimumTolerance",
+                        nonlinear_data.nox_data.forcing_term_minimum_tolerance);
+      prm.add_parameter("ForcingTermMaximumTolerance",
+                        nonlinear_data.nox_data.forcing_term_maximum_tolerance);
+      prm.add_parameter("ForcingTermAlpha",
+                        nonlinear_data.nox_data.forcing_term_alpha);
+      prm.add_parameter("ForcingTermGamma",
+                        nonlinear_data.nox_data.forcing_term_gamma);
       prm.leave_subsection();
 
       prm.enter_subsection("SNESData");

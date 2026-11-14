@@ -28,6 +28,14 @@ namespace NonLinearSolvers
     std::string line_search_method             = "Full Step";
     std::string line_search_interpolation_type = "Cubic";
     std::string nonlinear_solver               = "Line Search Based";
+
+    // "Constant" uses NonLinearData::l_rel_tol as the forcing term
+    std::string forcing_term_method            = "Constant";
+    double      forcing_term_initial_tolerance = 0.1;
+    double      forcing_term_minimum_tolerance = 1.e-6;
+    double      forcing_term_maximum_tolerance = 0.01;
+    double      forcing_term_alpha             = 1.5;
+    double      forcing_term_gamma             = 0.9;
   };
 
   struct SNESData
