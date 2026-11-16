@@ -36,6 +36,8 @@
 
 #include <pf-applications/numerics/vector_tools.h>
 
+#include <functional>
+
 namespace Preconditioners
 {
   using namespace dealii;
@@ -108,6 +110,17 @@ namespace Preconditioners
 
     virtual UnderlyingEntity
     underlying_entity() const = 0;
+
+    using JacobianVmult =
+      std::function<void(BlockVectorType &, const BlockVectorType &)>;
+
+    // Action of the Jacobian of the nonlinear system, for preconditioners
+    // that need it; an empty function detaches it
+    virtual void
+    set_jacobian(JacobianVmult jacobian_vmult)
+    {
+      (void)jacobian_vmult;
+    }
   };
 
 

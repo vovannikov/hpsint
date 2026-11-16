@@ -63,5 +63,7 @@ namespace Sintering
     std::string block_1_approximation = "all";
 
     std::string structure = "diagonal";
+
+    std::string offdiagonal_operator = "analytic";
   };
 } // namespace Sintering

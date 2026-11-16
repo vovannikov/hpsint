@@ -1249,6 +1249,15 @@ namespace Sintering
         "couplings are taken from the matrix-free nonlinear operator.",
         Patterns::Selection("diagonal|lower|upper|symmetric_gs"));
 
+      prm.add_parameter(
+        "OffDiagonalOperator",
+        preconditioners_data.block_preconditioner_2_data.offdiagonal_operator,
+        "Operator providing the block couplings for non-diagonal structures: "
+        "analytic (linearized matrix-free operator) or jacobian (the "
+        "Jacobian used by the linear solver, e.g. Jacobian-free incl. "
+        "nonlocal advection forces; one residual evaluation per stage).",
+        Patterns::Selection("analytic|jacobian"));
+
       prm.enter_subsection("Block2");
       add_preconditioner_data(
         preconditioners_data.block_preconditioner_2_data.block_2,
