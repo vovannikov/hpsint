@@ -109,6 +109,10 @@ namespace TimeIntegration
 
       auto &j_op = *jacobian_operator;
 
+      preconditioner.set_jacobian(
+        [&j_op](auto &dst, const auto &src) { j_op.vmult(dst, src); });
+      preconditioner_with_jacobian = &preconditioner;
+
       // Create linear solver
       linear_solver = LinearSolvers::create(j_op,
                                             preconditioner,
@@ -636,6 +640,11 @@ namespace TimeIntegration
       non_linear_solver_executor->clear();
     }
 
+    ~TimeMarchingImplicit()
+    {
+      preconditioner_with_jacobian->set_jacobian({});
+    }
+
   private:
     std::unique_ptr<ReductionControl> solver_control_l;
 
@@ -644,6 +653,8 @@ namespace TimeIntegration
     std::unique_ptr<LinearSolvers::LinearSolverBase<Number>> linear_solver;
 
     std::unique_ptr<JacobianBase<Number>> jacobian_operator;
+
+    Preconditioners::PreconditionerBase<Number> *preconditioner_with_jacobian;
 
     std::unique_ptr<NewtonSolver<VectorType>> non_linear_solver_executor;
   };

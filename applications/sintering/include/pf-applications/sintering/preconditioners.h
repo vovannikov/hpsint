@@ -1268,6 +1268,14 @@ namespace Sintering
       return Preconditioners::UnderlyingEntity::None;
     }
 
+    void
+    set_jacobian(
+      typename Preconditioners::PreconditionerBase<Number>::JacobianVmult
+        jacobian_vmult_in) override
+    {
+      jacobian_vmult = std::move(jacobian_vmult_in);
+    }
+
     virtual std::size_t
     memory_consumption() const override
     {
@@ -1385,6 +1393,20 @@ namespace Sintering
     {
       MyScope scope(timer, "precon::vmult::offdiagonal");
 
+      if (data.offdiagonal_operator == "jacobian")
+        {
+          AssertThrow(jacobian_vmult,
+                      ExcMessage("No Jacobian has been attached to "
+                                 "BlockPreconditioner2"));
+
+          for (unsigned int b = stage.start; b < stage.end; ++b)
+            x.block(b) = 0.;
+
+          jacobian_vmult(work_rhs, x);
+
+          return true;
+        }
+
       if constexpr (has_vmult_coupling)
         {
           const auto rows = work_rhs.create_view(stage.start, stage.end);
@@ -1450,6 +1472,9 @@ namespace Sintering
       &nonlinear_operator;
 
     mutable BlockVectorType work_rhs;
+
+    typename Preconditioners::PreconditionerBase<Number>::JacobianVmult
+      jacobian_vmult;
 
     // operator CH
     std::unique_ptr<
