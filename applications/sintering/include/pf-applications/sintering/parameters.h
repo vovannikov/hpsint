@@ -1242,6 +1242,12 @@ namespace Sintering
         Patterns::Selection("all|const|max|avg"));
 
       prm.add_parameter(
+        "Block1GaussSeidel",
+        preconditioners_data.block_preconditioner_2_data.block_1_gauss_seidel,
+        "Gauss-Seidel sweep over the order parameters within the Allen Cahn "
+        "block to account for the grain-grain coupling (BlockILU/BlockAMG).");
+
+      prm.add_parameter(
         "Structure",
         preconditioners_data.block_preconditioner_2_data.structure,
         "Block structure: diagonal, lower (solid -> CH -> AC sweep), "
