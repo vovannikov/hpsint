@@ -24,6 +24,7 @@
 #include <pf-applications/structural/stvenantkirchhoff.h>
 
 #include <algorithm>
+#include <concepts>
 
 namespace Sintering
 {
@@ -1349,11 +1350,10 @@ namespace Sintering
         work.reinit(src);
     }
 
-    // Block Gauss-Seidel stages in residual-correction form. The coupling
-    // between the blocks is obtained from the full matrix-free operator.
+    // Block Gauss-Seidel stages: x_s = P_s^{-1} (b_s - sum_{t != s} A_st x_t),
+    // only the off-diagonal blocks A_st of the matrix-free operator are needed
     void
     apply_stages(const std::vector<Stage> &stages,
-                 const bool                accumulate,
                  const bool                dst_is_zero,
                  BlockVectorType          &dst,
                  const BlockVectorType    &src) const
@@ -1364,12 +1364,8 @@ namespace Sintering
 
           const BlockVectorType *rhs = &src;
 
-          if (!(i == 0 && dst_is_zero))
+          if (!(i == 0 && dst_is_zero) && compute_coupling(stage, dst))
             {
-              MyScope scope(timer, "precon::vmult::offdiagonal");
-
-              nonlinear_operator.vmult(work_rhs, dst);
-
               for (unsigned int b = stage.start; b < stage.end; ++b)
                 work_rhs.block(b).sadd(-1., 1., src.block(b));
 
@@ -1380,22 +1376,37 @@ namespace Sintering
                         "precon::vmult::precon_" + std::to_string(stage.index));
 
           const auto rhs_view = rhs->create_view(stage.start, stage.end);
+          const auto dst_view = dst.create_view(stage.start, stage.end);
 
-          if (accumulate)
-            {
-              const auto z_view = work_z.create_view(stage.start, stage.end);
+          stage_preconditioner(stage.index).vmult(*dst_view, *rhs_view);
+        }
+    }
 
-              stage_preconditioner(stage.index).vmult(*z_view, *rhs_view);
+    // Write sum_{t != s} A_st x_t into the stage rows of work_rhs, returns
+    // false if the coupling vanishes. The stage blocks of x are overwritten
+    // by the stage solve afterwards, so the fallback may zero them.
+    bool
+    compute_coupling(const Stage &stage, BlockVectorType &x) const
+    {
+      MyScope scope(timer, "precon::vmult::offdiagonal");
 
-              for (unsigned int b = stage.start; b < stage.end; ++b)
-                dst.block(b).add(1., work_z.block(b));
-            }
-          else
-            {
-              const auto dst_view = dst.create_view(stage.start, stage.end);
+      if constexpr (has_vmult_coupling)
+        {
+          const auto rows = work_rhs.create_view(stage.start, stage.end);
 
-              stage_preconditioner(stage.index).vmult(*dst_view, *rhs_view);
-            }
+          return nonlinear_operator.vmult_coupling(*rows,
+                                                   x,
+                                                   stage.start,
+                                                   stage.end);
+        }
+      else
+        {
+          for (unsigned int b = stage.start; b < stage.end; ++b)
+            x.block(b) = 0.;
+
+          nonlinear_operator.vmult(work_rhs, x);
+
+          return true;
         }
     }
 
@@ -1419,22 +1430,31 @@ namespace Sintering
       prepare_work_vector(work_rhs, src);
 
       dst = 0.;
-      apply_stages(stages, false, true, dst, src);
+      apply_stages(stages, true, dst, src);
 
       if (data.structure == "symmetric_gs")
         {
-          prepare_work_vector(work_z, src);
-
           // backward sweep, the last stage is not repeated
           const std::vector<Stage> backward(stages.rbegin() + 1, stages.rend());
-          apply_stages(backward, true, false, dst, src);
+          apply_stages(backward, false, dst, src);
         }
     }
+
+    // Operators may provide the off-diagonal blocks only, which is much
+    // cheaper than the full vmult()
+    static constexpr bool has_vmult_coupling =
+      requires(const NonLinearOperator<dim, Number, VectorizedArrayType> &op,
+               BlockVectorType                                           &dst,
+               const BlockVectorType                                     &src) {
+        {
+          op.vmult_coupling(dst, src, 0u, 0u)
+        } -> std::convertible_to<bool>;
+      };
 
     const NonLinearOperator<dim, Number, VectorizedArrayType>
       &nonlinear_operator;
 
-    mutable BlockVectorType work_rhs, work_z;
+    mutable BlockVectorType work_rhs;
 
     // operator CH
     std::unique_ptr<
