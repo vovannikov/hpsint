@@ -1246,6 +1246,15 @@ namespace Sintering
                                 params.preconditioners_data.outer);
 
       // A check for validity of the FDM approximation and direct linear solver
+      if (params.preconditioners_data.outer.type == "BlockPreconditioner2" &&
+          params.preconditioners_data.block_preconditioner_2_data.structure !=
+            "diagonal")
+        {
+          AssertThrow(
+            !params.matrix_based,
+            ExcMessage(
+              "Non-diagonal BlockPreconditioner2 requires the matrix-free mode"));
+        }
       if (params.nonlinear_data.fdm_jacobian_approximation)
         {
           AssertThrow(params.matrix_based, ExcNotImplemented());

@@ -23,6 +23,8 @@
 
 #include <pf-applications/structural/stvenantkirchhoff.h>
 
+#include <algorithm>
+
 namespace Sintering
 {
   using namespace dealii;
@@ -1001,7 +1003,8 @@ namespace Sintering
       const BlockPreconditioner2Data                        &data,
       const AdvectionMechanism<dim, Number, VectorizedArrayType> &advection,
       const bool print_stats = true)
-      : data(data)
+      : nonlinear_operator(nonlinear_operator)
+      , data(data)
       , print_stats(print_stats)
     {
       // create operators
@@ -1105,7 +1108,8 @@ namespace Sintering
                                      &transfer,
       const BlockPreconditioner2Data &data,
       const bool                      print_stats = true)
-      : data(data)
+      : nonlinear_operator(nonlinear_operator)
+      , data(data)
       , print_stats(print_stats)
     {
       AssertThrow(false, ExcNotImplemented());
@@ -1224,37 +1228,10 @@ namespace Sintering
     {
       MyScope scope(timer, "precon::vmult");
 
-      {
-        MyScope    scope(timer, "precon::vmult::precon_0");
-        const auto start    = 0;
-        const auto end      = 2;
-        const auto dst_view = dst.create_view(start, end);
-        const auto src_view = src.create_view(start, end);
-
-        preconditioner_0->vmult(*dst_view, *src_view);
-      }
-
-      {
-        MyScope    scope(timer, "precon::vmult::precon_1");
-        const auto start = 2;
-        const auto end =
-          preconditioner_2 ? (dst.n_blocks() - dim) : dst.n_blocks();
-        const auto dst_view = dst.create_view(start, end);
-        const auto src_view = src.create_view(start, end);
-
-        preconditioner_1->vmult(*dst_view, *src_view);
-      }
-
-      if (preconditioner_2)
-        {
-          MyScope    scope(timer, "precon::vmult::precon_2");
-          const auto start    = dst.n_blocks() - dim;
-          const auto end      = dst.n_blocks();
-          const auto dst_view = dst.create_view(start, end);
-          const auto src_view = src.create_view(start, end);
-
-          preconditioner_2->vmult(*dst_view, *src_view);
-        }
+      if (data.structure == "diagonal")
+        vmult_diagonal(dst, src);
+      else
+        vmult_sweeps(dst, src);
     }
 
     void
@@ -1308,6 +1285,157 @@ namespace Sintering
     }
 
   private:
+    // Block range [start, end) handled by the preconditioner with a given index
+    struct Stage
+    {
+      unsigned int index;
+      unsigned int start;
+      unsigned int end;
+    };
+
+    void
+    vmult_diagonal(BlockVectorType &dst, const BlockVectorType &src) const
+    {
+      {
+        MyScope    scope(timer, "precon::vmult::precon_0");
+        const auto start    = 0;
+        const auto end      = 2;
+        const auto dst_view = dst.create_view(start, end);
+        const auto src_view = src.create_view(start, end);
+
+        preconditioner_0->vmult(*dst_view, *src_view);
+      }
+
+      {
+        MyScope    scope(timer, "precon::vmult::precon_1");
+        const auto start = 2;
+        const auto end =
+          preconditioner_2 ? (dst.n_blocks() - dim) : dst.n_blocks();
+        const auto dst_view = dst.create_view(start, end);
+        const auto src_view = src.create_view(start, end);
+
+        preconditioner_1->vmult(*dst_view, *src_view);
+      }
+
+      if (preconditioner_2)
+        {
+          MyScope    scope(timer, "precon::vmult::precon_2");
+          const auto start    = dst.n_blocks() - dim;
+          const auto end      = dst.n_blocks();
+          const auto dst_view = dst.create_view(start, end);
+          const auto src_view = src.create_view(start, end);
+
+          preconditioner_2->vmult(*dst_view, *src_view);
+        }
+    }
+
+    const Preconditioners::PreconditionerBase<Number> &
+    stage_preconditioner(const unsigned int index) const
+    {
+      if (index == 0)
+        return *preconditioner_0;
+      else if (index == 1)
+        return *preconditioner_1;
+      else
+        return *preconditioner_2;
+    }
+
+    void
+    prepare_work_vector(BlockVectorType &work, const BlockVectorType &src) const
+    {
+      if (work.n_blocks() != src.n_blocks() ||
+          !work.block(0).partitioners_are_compatible(
+            *src.block(0).get_partitioner()))
+        work.reinit(src);
+    }
+
+    // Block Gauss-Seidel stages in residual-correction form. The coupling
+    // between the blocks is obtained from the full matrix-free operator.
+    void
+    apply_stages(const std::vector<Stage> &stages,
+                 const bool                accumulate,
+                 const bool                dst_is_zero,
+                 BlockVectorType          &dst,
+                 const BlockVectorType    &src) const
+    {
+      for (unsigned int i = 0; i < stages.size(); ++i)
+        {
+          const auto &stage = stages[i];
+
+          const BlockVectorType *rhs = &src;
+
+          if (!(i == 0 && dst_is_zero))
+            {
+              MyScope scope(timer, "precon::vmult::offdiagonal");
+
+              nonlinear_operator.vmult(work_rhs, dst);
+
+              for (unsigned int b = stage.start; b < stage.end; ++b)
+                work_rhs.block(b).sadd(-1., 1., src.block(b));
+
+              rhs = &work_rhs;
+            }
+
+          MyScope scope(timer,
+                        "precon::vmult::precon_" + std::to_string(stage.index));
+
+          const auto rhs_view = rhs->create_view(stage.start, stage.end);
+
+          if (accumulate)
+            {
+              const auto z_view = work_z.create_view(stage.start, stage.end);
+
+              stage_preconditioner(stage.index).vmult(*z_view, *rhs_view);
+
+              for (unsigned int b = stage.start; b < stage.end; ++b)
+                dst.block(b).add(1., work_z.block(b));
+            }
+          else
+            {
+              const auto dst_view = dst.create_view(stage.start, stage.end);
+
+              stage_preconditioner(stage.index).vmult(*dst_view, *rhs_view);
+            }
+        }
+    }
+
+    void
+    vmult_sweeps(BlockVectorType &dst, const BlockVectorType &src) const
+    {
+      const unsigned int n_blocks = dst.n_blocks();
+      const unsigned int end_ac =
+        preconditioner_2 ? (n_blocks - dim) : n_blocks;
+
+      // sweep order: solid -> CH -> AC
+      std::vector<Stage> stages;
+      if (preconditioner_2)
+        stages.push_back({2, n_blocks - dim, n_blocks});
+      stages.push_back({0, 0, 2});
+      stages.push_back({1, 2, end_ac});
+
+      if (data.structure == "upper")
+        std::reverse(stages.begin(), stages.end());
+
+      prepare_work_vector(work_rhs, src);
+
+      dst = 0.;
+      apply_stages(stages, false, true, dst, src);
+
+      if (data.structure == "symmetric_gs")
+        {
+          prepare_work_vector(work_z, src);
+
+          // backward sweep, the last stage is not repeated
+          const std::vector<Stage> backward(stages.rbegin() + 1, stages.rend());
+          apply_stages(backward, true, false, dst, src);
+        }
+    }
+
+    const NonLinearOperator<dim, Number, VectorizedArrayType>
+      &nonlinear_operator;
+
+    mutable BlockVectorType work_rhs, work_z;
+
     // operator CH
     std::unique_ptr<
       OperatorCahnHilliard<dim, Number, VectorizedArrayType, NonLinearOperator>>

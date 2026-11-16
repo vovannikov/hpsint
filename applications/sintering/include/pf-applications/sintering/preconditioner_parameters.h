@@ -61,5 +61,7 @@ namespace Sintering
     PreconditionerData block_2 = {"AMG"};
 
     std::string block_1_approximation = "all";
+
+    std::string structure = "diagonal";
   };
 } // namespace Sintering
