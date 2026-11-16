@@ -1241,6 +1241,14 @@ namespace Sintering
         "Approximation of the second block (Allen Cahn).",
         Patterns::Selection("all|const|max|avg"));
 
+      prm.add_parameter(
+        "Structure",
+        preconditioners_data.block_preconditioner_2_data.structure,
+        "Block structure: diagonal, lower (solid -> CH -> AC sweep), "
+        "upper (AC -> CH -> solid sweep) or symmetric_gs. Off-diagonal "
+        "couplings are taken from the matrix-free nonlinear operator.",
+        Patterns::Selection("diagonal|lower|upper|symmetric_gs"));
+
       prm.enter_subsection("Block2");
       add_preconditioner_data(
         preconditioners_data.block_preconditioner_2_data.block_2,
