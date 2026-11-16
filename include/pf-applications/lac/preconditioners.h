@@ -121,6 +121,25 @@ namespace Preconditioners
     {
       (void)jacobian_vmult;
     }
+
+    // Block-diagonal preconditioners may apply the preconditioner of a single
+    // block b to a single vector
+    virtual bool
+    supports_vmult_block() const
+    {
+      return false;
+    }
+
+    virtual void
+    vmult_block(const unsigned int b,
+                VectorType        &dst,
+                const VectorType  &src) const
+    {
+      (void)b;
+      (void)dst;
+      (void)src;
+      AssertThrow(false, ExcNotImplemented());
+    }
   };
 
 
@@ -739,6 +758,22 @@ namespace Preconditioners
         precondition_amg[b]->vmult(dst.block(b), src.block(b));
     }
 
+    bool
+    supports_vmult_block() const override
+    {
+      return true;
+    }
+
+    void
+    vmult_block(const unsigned int b,
+                VectorType        &dst,
+                const VectorType  &src) const override
+    {
+      MyScope scope(timer, "block_amg::vmult_block");
+
+      precondition_amg[precondition_amg.size() == 1 ? 0 : b]->vmult(dst, src);
+    }
+
     void
     do_update() override
     {
@@ -955,6 +990,23 @@ namespace Preconditioners
           for (unsigned int b = 0; b < src.n_blocks(); ++b)
             precondition_ilu[b]->vmult(dst.block(b), src.block(b));
         }
+    }
+
+    bool
+    supports_vmult_block() const override
+    {
+      return true;
+    }
+
+    void
+    vmult_block(const unsigned int b,
+                VectorType        &dst,
+                const VectorType  &src) const override
+    {
+      MyScope scope(timer, "block_ilu::vmult_block");
+
+      // A single block approximates all components
+      precondition_ilu[single_block ? 0 : b]->vmult(dst, src);
     }
 
     void

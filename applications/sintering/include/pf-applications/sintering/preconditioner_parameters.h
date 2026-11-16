@@ -65,5 +65,7 @@ namespace Sintering
     std::string structure = "diagonal";
 
     std::string offdiagonal_operator = "analytic";
+
+    bool block_1_gauss_seidel = false;
   };
 } // namespace Sintering

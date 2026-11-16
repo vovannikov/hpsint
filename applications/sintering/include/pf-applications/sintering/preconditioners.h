@@ -1056,6 +1056,16 @@ namespace Sintering
         {
           AssertThrow(false, ExcNotImplemented());
         }
+
+      if (data.block_1_gauss_seidel)
+        {
+          AssertThrow(preconditioner_1->supports_vmult_block(),
+                      ExcMessage("Block1GaussSeidel requires Block1 of type "
+                                 "BlockILU or BlockAMG"));
+          AssertThrow(has_vmult_coupling_order_parameters,
+                      ExcMessage("Block1GaussSeidel is not supported by the "
+                                 "nonlinear operator"));
+        }
     }
 
     BlockPreconditioner2(
@@ -1320,10 +1330,21 @@ namespace Sintering
         const auto start = 2;
         const auto end =
           preconditioner_2 ? (dst.n_blocks() - dim) : dst.n_blocks();
-        const auto dst_view = dst.create_view(start, end);
-        const auto src_view = src.create_view(start, end);
 
-        preconditioner_1->vmult(*dst_view, *src_view);
+        if (data.block_1_gauss_seidel)
+          {
+            for (unsigned int b = start; b < end; ++b)
+              dst.block(b) = 0.;
+
+            vmult_ac_gauss_seidel(dst, src, start, end, true);
+          }
+        else
+          {
+            const auto dst_view = dst.create_view(start, end);
+            const auto src_view = src.create_view(start, end);
+
+            preconditioner_1->vmult(*dst_view, *src_view);
+          }
       }
 
       if (preconditioner_2)
@@ -1383,10 +1404,56 @@ namespace Sintering
           MyScope scope(timer,
                         "precon::vmult::precon_" + std::to_string(stage.index));
 
+          if (stage.index == 1 && data.block_1_gauss_seidel)
+            {
+              vmult_ac_gauss_seidel(
+                dst, *rhs, stage.start, stage.end, dst_is_zero);
+              continue;
+            }
+
           const auto rhs_view = rhs->create_view(stage.start, stage.end);
           const auto dst_view = dst.create_view(stage.start, stage.end);
 
           stage_preconditioner(stage.index).vmult(*dst_view, *rhs_view);
+        }
+    }
+
+    // Gauss-Seidel over the order parameters [start, end) of dst with the
+    // grain-grain couplings, x_g = P_g^{-1} (rhs_g - sum_{j != g} A_gj x_j)
+    void
+    vmult_ac_gauss_seidel(BlockVectorType       &dst,
+                          const BlockVectorType &rhs,
+                          const unsigned int     start,
+                          const unsigned int     end,
+                          const bool             ac_is_zero) const
+    {
+      if (work_grain.size() != rhs.block(start).size() ||
+          !work_grain.partitioners_are_compatible(
+            *rhs.block(start).get_partitioner()))
+        work_grain.reinit(rhs.block(start));
+
+      for (unsigned int g = 0; g < end - start; ++g)
+        {
+          const VectorType *rhs_g = &rhs.block(start + g);
+
+          if (!(g == 0 && ac_is_zero))
+            {
+              MyScope scope(timer, "precon::vmult::offdiagonal_ac");
+
+              bool has_coupling = false;
+              if constexpr (has_vmult_coupling_order_parameters)
+                has_coupling =
+                  nonlinear_operator.vmult_coupling_order_parameters(
+                    work_grain, dst, g);
+
+              if (has_coupling)
+                {
+                  work_grain.sadd(-1., 1., rhs.block(start + g));
+                  rhs_g = &work_grain;
+                }
+            }
+
+          preconditioner_1->vmult_block(g, dst.block(start + g), *rhs_g);
         }
     }
 
@@ -1477,6 +1544,18 @@ namespace Sintering
       &nonlinear_operator;
 
     mutable BlockVectorType work_rhs;
+
+    mutable VectorType work_grain;
+
+    // Coupling between the order parameters for the Gauss-Seidel sweep
+    static constexpr bool has_vmult_coupling_order_parameters =
+      requires(const NonLinearOperator<dim, Number, VectorizedArrayType> &op,
+               VectorType                                                &dst,
+               const BlockVectorType                                     &src) {
+        {
+          op.vmult_coupling_order_parameters(dst, src, 0u)
+        } -> std::convertible_to<bool>;
+      };
 
     typename Preconditioners::PreconditionerBase<Number>::JacobianVmult
       jacobian_vmult;
