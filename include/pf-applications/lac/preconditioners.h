@@ -646,10 +646,17 @@ namespace Preconditioners
 
     AMG(const Operator &op,
         const TrilinosWrappers::PreconditionAMG::AdditionalData &
-          additional_data = TrilinosWrappers::PreconditionAMG::AdditionalData())
+          additional_data = TrilinosWrappers::PreconditionAMG::AdditionalData(),
+        const bool use_rigid_body_modes = false)
       : op(op)
       , additional_data(additional_data)
-    {}
+      , use_rigid_body_modes(use_rigid_body_modes)
+    {
+      if constexpr (!has_rigid_body_modes)
+        AssertThrow(!use_rigid_body_modes,
+                    ExcMessage("The operator does not provide rigid body "
+                               "modes for AMG"));
+    }
 
     virtual void
     clear() override
@@ -690,6 +697,11 @@ namespace Preconditioners
     {
       MyScope scope(timer, "amg::setup");
 
+      // The near null space depends on the mesh, so it is rebuilt every time
+      if constexpr (has_rigid_body_modes)
+        if (use_rigid_body_modes)
+          additional_data.constant_modes_values = op.get_rigid_body_modes();
+
       precondition_amg.initialize(op.get_system_matrix(), additional_data);
     }
 
@@ -707,10 +719,15 @@ namespace Preconditioners
     }
 
   private:
+    static constexpr bool has_rigid_body_modes =
+      requires(const Operator &o) { o.get_rigid_body_modes(); };
+
     const Operator &op;
 
     TrilinosWrappers::PreconditionAMG::AdditionalData additional_data;
     TrilinosWrappers::PreconditionAMG                 precondition_amg;
+
+    const bool use_rigid_body_modes;
 
     mutable MyTimerOutput timer;
 
@@ -1460,12 +1477,19 @@ namespace Preconditioners
   std::unique_ptr<PreconditionerBase<typename T::value_type>>
   create(const T                                           &op,
          const std::string                                 &label,
-         TrilinosWrappers::PreconditionAMG::AdditionalData &additional_data)
+         TrilinosWrappers::PreconditionAMG::AdditionalData &additional_data,
+         const bool use_rigid_body_modes = false)
   {
     if (label == "AMG")
-      return std::make_unique<AMG<T>>(op, additional_data);
+      return std::make_unique<AMG<T>>(op,
+                                      additional_data,
+                                      use_rigid_body_modes);
     else if (label == "BlockAMG")
-      return std::make_unique<BlockAMG<T>>(op, additional_data);
+      {
+        AssertThrow(!use_rigid_body_modes,
+                    ExcMessage("BlockAMG does not support rigid body modes"));
+        return std::make_unique<BlockAMG<T>>(op, additional_data);
+      }
 
     AssertThrow(
       false,

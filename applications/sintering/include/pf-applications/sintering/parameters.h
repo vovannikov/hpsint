@@ -1191,6 +1191,10 @@ namespace Sintering
         prm.add_parameter("NCycles",
                           data.amg_data.n_cycles,
                           "Number of cycles.");
+        prm.add_parameter(
+          "RigidBodyModes",
+          data.amg_data.rigid_body_modes,
+          "Use rigid body modes as AMG near null space (elasticity, AMG only).");
         prm.leave_subsection();
 
         prm.enter_subsection("ILU");
