@@ -15,6 +15,11 @@
 
 #pragma once
 
+#include <deal.II/dofs/dof_tools.h>
+
+#include <deal.II/fe/fe_system.h>
+#include <deal.II/fe/mapping_q1.h>
+
 #include <pf-applications/lac/dynamic_block_vector.h>
 #include <pf-applications/lac/preconditioners.h>
 
@@ -227,6 +232,20 @@ namespace Sintering
     n_grains_to_n_components(const unsigned int)
     {
       return dim;
+    }
+
+    // Translations and rotations in the numbering of the system matrix
+    std::vector<std::vector<double>>
+    get_rigid_body_modes() const
+    {
+      const auto &dof_handler_scalar =
+        this->matrix_free.get_dof_handler(this->dof_index);
+
+      DoFHandler<dim> dof_handler(dof_handler_scalar.get_triangulation());
+      dof_handler.distribute_dofs(
+        FESystem<dim>(dof_handler_scalar.get_fe(), dim));
+
+      return DoFTools::extract_rigid_body_modes(MappingQ1<dim>(), dof_handler);
     }
 
     template <int n_comp, int n_grains, typename FECellIntegratorType>
@@ -952,7 +971,10 @@ namespace Sintering
         TrilinosWrappers::PreconditionAMG::AdditionalData ad;
         ad.smoother_sweeps = config.amg_data.smoother_sweeps;
         ad.n_cycles        = config.amg_data.n_cycles;
-        return Preconditioners::create(op, type, ad);
+        return Preconditioners::create(op,
+                                       type,
+                                       ad,
+                                       config.amg_data.rigid_body_modes);
       }
     else if (type == "ILU" || type == "BlockILU")
       {
@@ -1443,8 +1465,9 @@ namespace Sintering
               bool has_coupling = false;
               if constexpr (has_vmult_coupling_order_parameters)
                 has_coupling =
-                  nonlinear_operator.vmult_coupling_order_parameters(
-                    work_grain, dst, g);
+                  nonlinear_operator.vmult_coupling_order_parameters(work_grain,
+                                                                     dst,
+                                                                     g);
 
               if (has_coupling)
                 {

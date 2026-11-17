@@ -21,8 +21,9 @@ namespace Sintering
 {
   struct AMGData
   {
-    unsigned int smoother_sweeps = 4;
-    unsigned int n_cycles        = 5;
+    unsigned int smoother_sweeps  = 4;
+    unsigned int n_cycles         = 5;
+    bool         rigid_body_modes = false;
   };
 
   struct ILUData
