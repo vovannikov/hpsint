@@ -132,6 +132,10 @@ namespace TimeIntegration
         nonlinear_params.newton_threshold_linear_growth);
       const auto growth_monitor = linear_growth_monitor;
 
+      // Residual norm at the first linear solve of the current time step
+      initial_residual_norm       = std::make_shared<double>(0.);
+      const auto initial_res_norm = initial_residual_norm;
+
 
       // Lambda to compute residual
       const auto nl_residual = [&](const auto &src, auto &dst) {
@@ -225,6 +229,7 @@ namespace TimeIntegration
         [&,
          last_point,
          growth_monitor,
+         initial_res_norm,
          nl_setup_preconditioner,
          retry_on_linear_failure](const auto  &src,
                                   auto        &dst,
@@ -232,23 +237,45 @@ namespace TimeIntegration
           ScopedName sc("solve_with_jacobian");
           MyScope    scope(timer, sc);
 
-          // A positive tolerance (forcing term) from the nonlinear solver
-          // overrides LinearRelativeTolerance for this solve only
-          if (tolerance > 0.)
-            {
-              solver_control_l->set_reduction(tolerance);
-
-              if (nonlinear_params.verbosity >= 2)
-                stream << " - l_rel_tol: " << tolerance << std::endl;
-            }
-          const auto restore_reduction = [this, &nonlinear_params]() {
-            this->solver_control_l->set_reduction(nonlinear_params.l_rel_tol);
-          };
-
           // note: we mess with the input here, since we know that Newton does
           // not use the content anymore
           for (unsigned int b = 0; b < src.n_blocks(); ++b)
             constraints.set_zero(const_cast<VectorType &>(src).block(b));
+
+          // A positive tolerance (forcing term) from the nonlinear solver
+          // overrides LinearRelativeTolerance for this solve only
+          double rel_tol =
+            tolerance > 0. ? tolerance : nonlinear_params.l_rel_tol;
+
+          if (nonlinear_params.linear_final_step_safeguard > 0.)
+            {
+              const double res_norm = src.l2_norm();
+
+              if (*initial_res_norm == 0.)
+                *initial_res_norm = res_norm;
+
+              const double nl_target =
+                std::max(nonlinear_params.nl_abs_tol,
+                         nonlinear_params.nl_rel_tol * (*initial_res_norm));
+
+              // No need to solve beyond what Newton needs to reach its target
+              if (res_norm > 0.)
+                rel_tol = std::max(
+                  rel_tol,
+                  std::min(nonlinear_params.linear_final_step_safeguard *
+                             nl_target / res_norm,
+                           nonlinear_params.linear_final_step_safeguard));
+            }
+
+          if (rel_tol != nonlinear_params.l_rel_tol)
+            solver_control_l->set_reduction(rel_tol);
+
+          if (nonlinear_params.verbosity >= 2)
+            stream << " - l_rel_tol: " << rel_tol << std::endl;
+
+          const auto restore_reduction = [this, &nonlinear_params]() {
+            this->solver_control_l->set_reduction(nonlinear_params.l_rel_tol);
+          };
 
           unsigned int n_iterations = 0;
 
@@ -631,6 +658,7 @@ namespace TimeIntegration
     make_step(VectorType &current_solution) override
     {
       linear_growth_monitor->reset();
+      *initial_residual_norm = 0.;
       non_linear_solver_executor->solve(current_solution);
     }
 
@@ -649,6 +677,8 @@ namespace TimeIntegration
     std::unique_ptr<ReductionControl> solver_control_l;
 
     std::shared_ptr<LinearIterationGrowthMonitor> linear_growth_monitor;
+
+    std::shared_ptr<double> initial_residual_norm;
 
     std::unique_ptr<LinearSolvers::LinearSolverBase<Number>> linear_solver;
 
