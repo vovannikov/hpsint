@@ -66,6 +66,7 @@ namespace NonLinearSolvers
     bool         linear_failure_rebuild_preconditioner = false;
     unsigned int linear_failure_retries                = 1;
     double       linear_accept_reduction               = 0.;
+    double       linear_final_step_safeguard           = 0.;
 
     std::string nonlinear_solver_type = "damped";
 
