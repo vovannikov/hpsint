@@ -17,6 +17,8 @@
 
 #include <deal.II/base/timer.h>
 
+#include <memory>
+
 void
 monitor(const std::string label);
 
@@ -78,11 +80,16 @@ public:
   static void
   configure(const double interval);
 
+  // Section timing is only recorded if periodic output is requested
+  static bool
+  timing_enabled();
+
 private:
   TimerCollection();
 
   std::set<std::pair<unsigned int, const MyTimerOutput *>> timers;
   TimerPredicate                                           predicate;
+  bool                                                     enabled = false;
 
 public:
   TimerCollection(const TimerCollection &) = delete;
@@ -150,7 +157,6 @@ private:
   leave();
 
   const std::string section_name;
-#ifdef WITH_TIMING
+
   std::unique_ptr<dealii::TimerOutput::Scope> scope;
-#endif
 };

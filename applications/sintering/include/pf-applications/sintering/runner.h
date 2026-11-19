@@ -34,7 +34,6 @@ static_assert(false, "No grains number has been given!");
 #  define N_Q_POINTS_1D FE_DEGREE + 1
 #endif
 
-#define WITH_TIMING
 // #define WITH_TIMING_OUTPUT
 // #define DISABLE_MPI_IO_SURFACE_OUTPUT
 

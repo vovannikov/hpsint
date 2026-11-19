@@ -207,6 +207,13 @@ TimerCollection::configure(const double interval)
   get_instance().predicate.reinit(TimerPredicate::real_time,
                                   0.0 /*dummy value*/,
                                   interval);
+  get_instance().enabled = interval > 0.0;
+}
+
+bool
+TimerCollection::timing_enabled()
+{
+  return get_instance().enabled;
 }
 
 TimerCollection::TimerCollection()
@@ -260,19 +267,15 @@ MyTimerOutput::operator()() const
 void
 MyTimerOutput::enter_subsection(const std::string label)
 {
-  (void)label;
-#ifdef WITH_TIMING
-  timer.enter_subsection(label);
-#endif
+  if (TimerCollection::timing_enabled())
+    timer.enter_subsection(label);
 }
 
 void
 MyTimerOutput::leave_subsection(const std::string label)
 {
-  (void)label;
-#ifdef WITH_TIMING
-  timer.leave_subsection(label);
-#endif
+  if (TimerCollection::timing_enabled())
+    timer.leave_subsection(label);
 }
 
 void
@@ -280,8 +283,10 @@ MyTimerOutput::print_wall_time_statistics() const
 {
   Assert(enabled, ExcInternalError());
 
-  if (timer.get_summary_data(TimerOutput::OutputData::total_wall_time).size() >
-      0)
+  // The statistics are collective, so all ranks have to agree on printing
+  const unsigned int has_data =
+    timer.get_summary_data(TimerOutput::OutputData::total_wall_time).size() > 0;
+  if (Utilities::MPI::max(has_data, MPI_COMM_WORLD) > 0)
     timer.print_wall_time_statistics(MPI_COMM_WORLD);
 }
 
@@ -298,14 +303,9 @@ MyScope::MyScope(TimerOutput       &timer_,
                  const bool         do_timing)
   : section_name(section_name)
 {
-#ifdef WITH_TIMING
-  if (do_timing)
+  if (do_timing && TimerCollection::timing_enabled())
     scope = std::make_unique<TimerOutput::Scope>(timer_, section_name);
   enter();
-#else
-  (void)timer_;
-  (void)do_timing;
-#endif
 }
 
 MyScope::MyScope(MyTimerOutput     &timer_,
@@ -317,20 +317,14 @@ MyScope::MyScope(MyTimerOutput     &timer_,
 MyScope::MyScope(const std::string &section_name, MyTimerOutput *ptr_timer)
   : section_name(section_name)
 {
-#ifdef WITH_TIMING
-  if (ptr_timer)
+  if (ptr_timer && TimerCollection::timing_enabled())
     scope = std::make_unique<TimerOutput::Scope>((*ptr_timer)(), section_name);
   enter();
-#else
-  (void)ptr_timer;
-#endif
 }
 
 MyScope::~MyScope()
 {
-#ifdef WITH_TIMING
   leave();
-#endif
 }
 
 void
