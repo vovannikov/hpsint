@@ -44,10 +44,18 @@ namespace Sintering
 
     ResidualWrapperAdvection(
       const AdvectionOperator<Number> &advection_operator,
-      const OperatorType              &nonlinear_operator)
+      const OperatorType              &nonlinear_operator,
+      const bool                       freeze_forces_in_jacobian = false)
       : ResidualWrapperBase<Number, OperatorType>(nonlinear_operator)
       , advection_operator(advection_operator)
+      , freeze_forces_in_jacobian(freeze_forces_in_jacobian)
     {}
+
+    void
+    freeze_linearization_data(const bool freeze) const override
+    {
+      forces_frozen = freeze && freeze_forces_in_jacobian;
+    }
 
   private:
     void
@@ -59,6 +67,9 @@ namespace Sintering
       const std::function<void(const unsigned int, const unsigned int)>
         post_operation = {}) const override
     {
+      // The forces no longer correspond to the linearization point
+      forces_frozen = false;
+
       advection_operator.evaluate_forces(src, pre_operation, post_operation);
       this
         ->template do_evaluate_nonlinear_residual<with_time_derivative ? 2 : 0>(
@@ -74,12 +85,16 @@ namespace Sintering
       const std::function<void(const unsigned int, const unsigned int)>
         post_operation = {}) const override
     {
-      advection_operator.evaluate_forces(src, pre_operation, post_operation);
+      if (!forces_frozen)
+        advection_operator.evaluate_forces(src, pre_operation, post_operation);
+
       this->template do_evaluate_nonlinear_residual<with_time_derivative>(
         dst, src, pre_operation, post_operation);
     }
 
   private:
     const AdvectionOperator<Number> &advection_operator;
+    const bool                       freeze_forces_in_jacobian;
+    mutable bool                     forces_frozen = false;
   };
 } // namespace Sintering

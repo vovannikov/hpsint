@@ -259,7 +259,17 @@ namespace NonLinearSolvers
         this->u_l2_norm = u.l2_norm();
 
       this->residual_u.reinit(u);
+
+      constexpr bool can_freeze =
+        requires { op.freeze_linearization_data(true); };
+
+      if constexpr (can_freeze)
+        op.freeze_linearization_data(false);
+
       op.template evaluate_nonlinear_residual<1>(this->residual_u, u);
+
+      if constexpr (can_freeze)
+        op.freeze_linearization_data(true);
     }
 
   private:
