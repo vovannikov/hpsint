@@ -538,8 +538,8 @@ namespace Sintering
                     MPI_SUM,
                     MPI_COMM_WORLD);
 
-      // Compute forces and communicate them to the regular advection
-      advection_mechanism.nullify_data(grain_tracker.n_segments());
+      // Compute forces and communicate them to the regular advection, the
+      // index data filled in the cell loop has to be kept
       for (unsigned int i = 0; i < n_segments; ++i)
         {
           const auto it =
@@ -616,59 +616,48 @@ namespace Sintering
       std::vector<unsigned int> &index_values =
         advection_mechanism.get_index_values();
 
-      auto init_segments = [&, this](const auto cell, const unsigned int ig) {
-        std::vector<std::pair<unsigned int, unsigned int>> segments(
-          matrix_free.n_active_entries_per_cell_batch(cell));
+      constexpr unsigned int n_lanes = VectorizedArrayType::size();
 
-        unsigned int i = 0;
+      // Pairs with max(eta_i) * max(eta_j) below this value within a cell
+      // are skipped, the check is done per cell (lane) to make the result
+      // independent of the cell batching
+      constexpr Number pair_tolerance = 1e-12;
 
-        for (; i < segments.size(); ++i)
-          {
-            bool set_invalid = false;
+      // Global segment index of each lane, done once per grain and cell
+      const auto fill_segment_indices =
+        [&, this](const auto                         cell,
+                  const unsigned int                 ig,
+                  std::array<unsigned int, n_lanes> &segment_indices) {
+          segment_indices.fill(numbers::invalid_unsigned_int);
 
-            const auto icell      = matrix_free.get_cell_iterator(cell, i);
-            const auto cell_index = icell->global_active_cell_index();
+          for (unsigned int i = 0;
+               i < matrix_free.n_active_entries_per_cell_batch(cell);
+               ++i)
+            {
+              const auto icell      = matrix_free.get_cell_iterator(cell, i);
+              const auto cell_index = icell->global_active_cell_index();
 
-            const unsigned int particle_id =
-              grain_tracker.get_particle_index(ig, cell_index);
+              const unsigned int particle_id =
+                grain_tracker.get_particle_index(ig, cell_index);
 
-            if (particle_id != numbers::invalid_unsigned_int)
-              {
-                const auto grain_and_segment =
-                  grain_tracker.get_grain_and_segment(ig, particle_id);
+              if (particle_id == numbers::invalid_unsigned_int)
+                continue;
 
-                if (grain_and_segment.first != numbers::invalid_unsigned_int)
-                  {
-                    segments[i] = grain_and_segment;
+              const auto grain_and_segment =
+                grain_tracker.get_grain_and_segment(ig, particle_id);
 
-                    index_values.push_back(
-                      grain_tracker.get_grain_segment_index(
-                        grain_and_segment.first, grain_and_segment.second));
-                  }
-                else
-                  {
-                    set_invalid = true;
-                  }
-              }
-            else
-              {
-                set_invalid = true;
-              }
+              if (grain_and_segment.first != numbers::invalid_unsigned_int)
+                segment_indices[i] = grain_tracker.get_grain_segment_index(
+                  grain_and_segment.first, grain_and_segment.second);
+            }
 
-            if (set_invalid)
-              {
-                segments[i] = std::make_pair(numbers::invalid_unsigned_int,
-                                             numbers::invalid_unsigned_int);
+          index_values.insert(index_values.end(),
+                              segment_indices.begin(),
+                              segment_indices.end());
+        };
 
-                index_values.push_back(numbers::invalid_unsigned_int);
-              }
-          }
-
-        for (; i < VectorizedArrayType::size(); ++i)
-          index_values.push_back(numbers::invalid_unsigned_int);
-
-        return segments;
-      };
+      std::array<std::array<unsigned int, n_lanes>, n_grains> segment_indices;
+      std::array<VectorizedArrayType, n_grains>               eta_max;
 
       for (auto cell = range.first; cell < range.second; ++cell)
         {
@@ -684,57 +673,58 @@ namespace Sintering
           const auto grain_to_relevant_grain =
             data.get_grain_to_relevant_grain(cell);
 
+          const auto is_relevant = [&](const unsigned int ig) {
+            return grain_to_relevant_grain[ig] !=
+                   static_cast<unsigned char>(255);
+          };
+
           for (unsigned int ig = 0; ig < n_grains; ++ig)
             {
-              if (grain_to_relevant_grain[ig] ==
-                  static_cast<unsigned char>(255))
+              if (!is_relevant(ig))
                 continue;
 
-              const auto segments_i = init_segments(cell, ig);
+              fill_segment_indices(cell, ig, segment_indices[ig]);
+
+              eta_max[ig] = 0.;
+              for (unsigned int q = 0; q < phi_sint.n_q_points; ++q)
+                eta_max[ig] = std::max(eta_max[ig],
+                                       std::abs(phi_sint.get_value(q)[2 + ig]));
 
               // Deal with volume only first
               for (unsigned int q = 0; q < phi_sint.n_q_points; ++q)
                 {
-                  const auto val = phi_sint.get_value(q);
-
-                  auto &eta_i = val[2 + ig];
-
                   Tensor<1, 1, VectorizedArrayType> value_result;
-                  value_result[0] = eta_i;
+                  value_result[0] = phi_sint.get_value(q)[2 + ig];
 
                   phi_v.submit_value(value_result, q);
                 }
 
               const auto volume = phi_v.integrate_value();
 
-              for (unsigned int k = 0; k < segments_i.size(); ++k)
+              for (unsigned int v = 0; v < n_lanes; ++v)
+                if (segment_indices[ig][v] != numbers::invalid_unsigned_int)
+                  grains_data_volumes[segment_indices[ig][v]] += volume[v];
+            }
+
+          // Now deal with forces, F_ji = -F_ij and the GB area is symmetric
+          for (unsigned int ig = 0; ig < n_grains; ++ig)
+            {
+              if (!is_relevant(ig))
+                continue;
+
+              for (unsigned int jg = ig + 1; jg < n_grains; ++jg)
                 {
-                  const auto &grain_and_segment_i = segments_i[k];
-
-                  if (grain_and_segment_i.first ==
-                      numbers::invalid_unsigned_int)
+                  if (!is_relevant(jg))
                     continue;
 
-                  // i index
-                  const auto segment_index_i =
-                    grain_tracker.get_grain_segment_index(
-                      grain_and_segment_i.first, grain_and_segment_i.second);
+                  const auto eta_max_ij = eta_max[ig] * eta_max[jg];
 
-                  // store volume
-                  grains_data_volumes[segment_index_i] += volume[k];
-                }
+                  bool pair_active = false;
+                  for (unsigned int v = 0; v < n_lanes; ++v)
+                    pair_active |= eta_max_ij[v] >= pair_tolerance;
 
-              // Now deal with forces
-              for (unsigned int jg = 0; jg < n_grains; ++jg)
-                {
-                  if (ig == jg)
+                  if (!pair_active)
                     continue;
-
-                  if (grain_to_relevant_grain[jg] ==
-                      static_cast<unsigned char>(255))
-                    continue;
-
-                  const auto segments_j = init_segments(cell, jg);
 
                   for (unsigned int q = 0; q < phi_sint.n_q_points; ++q)
                     {
@@ -794,39 +784,37 @@ namespace Sintering
 
                   const auto force_gb = phi_fg.integrate_value();
 
-                  for (unsigned int k = 0; k < segments_i.size(); ++k)
+                  const auto n_segments = grain_tracker.n_segments();
+
+                  for (unsigned int v = 0; v < n_lanes; ++v)
                     {
-                      const auto &grain_and_segment_i = segments_i[k];
+                      const auto segment_index_i = segment_indices[ig][v];
+                      const auto segment_index_j = segment_indices[jg][v];
 
-                      if (grain_and_segment_i.first ==
-                          numbers::invalid_unsigned_int)
+                      if (segment_index_i == numbers::invalid_unsigned_int ||
+                          segment_index_j == numbers::invalid_unsigned_int ||
+                          eta_max_ij[v] < pair_tolerance)
                         continue;
 
-                      const auto &grain_and_segment_j = segments_j[k];
+                      const auto offset_ij =
+                        n_comp_force_gb *
+                        (n_segments * segment_index_i + segment_index_j);
+                      const auto offset_ji =
+                        n_comp_force_gb *
+                        (n_segments * segment_index_j + segment_index_i);
 
-                      if (grain_and_segment_j.first ==
-                          numbers::invalid_unsigned_int)
-                        continue;
+                      for (unsigned int d = 0; d < dim; ++d)
+                        {
+                          grains_data_forces_gbs[offset_ij + d] +=
+                            force_gb[d][v];
+                          grains_data_forces_gbs[offset_ji + d] -=
+                            force_gb[d][v];
+                        }
 
-                      // i index
-                      const auto segment_index_i =
-                        grain_tracker.get_grain_segment_index(
-                          grain_and_segment_i.first,
-                          grain_and_segment_i.second);
-
-                      const auto offset_i = grain_tracker.n_segments() *
-                                            n_comp_force_gb * segment_index_i;
-
-                      // j index
-                      const auto segment_index_j =
-                        grain_tracker.get_grain_segment_index(
-                          grain_and_segment_j.first,
-                          grain_and_segment_j.second);
-
-                      for (unsigned int d = 0; d < n_comp_force_gb; ++d)
-                        grains_data_forces_gbs
-                          [offset_i + n_comp_force_gb * segment_index_j + d] +=
-                          force_gb[d][k];
+                      grains_data_forces_gbs[offset_ij + dim] +=
+                        force_gb[dim][v];
+                      grains_data_forces_gbs[offset_ji + dim] +=
+                        force_gb[dim][v];
                     }
                 }
             }
