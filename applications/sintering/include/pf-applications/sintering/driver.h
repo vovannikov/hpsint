@@ -1152,7 +1152,9 @@ namespace Sintering
           else
             residual_wrapper = std::make_unique<
               ResidualWrapperAdvection<Number, NonLinearOperator, true>>(
-              *advection_operator, nonlinear_operator);
+              *advection_operator,
+              nonlinear_operator,
+              params.advection_data.freeze_forces_in_jacobian);
         }
       else
         {

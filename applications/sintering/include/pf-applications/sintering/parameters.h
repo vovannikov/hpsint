@@ -207,6 +207,8 @@ namespace Sintering
 
     bool weighted_forces = false;
 
+    bool freeze_forces_in_jacobian = false;
+
     // Arrhenius activation energy for K. If 0 (default), K is treated as a
     // constant. If set to a non-zero value and Material.Type == Realistic,
     // K is recomputed at runtime via the Arrhenius relation, reusing K as
@@ -781,6 +783,12 @@ namespace Sintering
       prm.add_parameter("WeightedForces",
                         advection_data.weighted_forces,
                         "Use weighted advection forces.");
+      prm.add_parameter(
+        "FreezeForcesInJacobian",
+        advection_data.freeze_forces_in_jacobian,
+        "Keep the grain forces fixed at the linearization point in the "
+        "Jacobian-free products, i.e. neglect their sensitivity in the "
+        "Jacobian. Only effective if JacobiFree = true.");
       prm.add_parameter(
         "Qk",
         advection_data.Qk,

@@ -55,6 +55,14 @@ namespace NonLinearSolvers
         evaluate_for_jacobian(dst, src, pre_operation, post_operation);
     }
 
+    // Called by Jacobian-free operators around the evaluation at the
+    // linearization point; allows keeping state-dependent data fixed
+    virtual void
+    freeze_linearization_data(const bool freeze) const
+    {
+      (void)freeze;
+    }
+
   private:
     virtual void
     evaluate_for_residual(
