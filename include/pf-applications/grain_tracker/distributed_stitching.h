@@ -642,13 +642,31 @@ namespace GrainTracker
     }
   } // namespace internal
 
-  template <int dim, typename VectorIds>
+  /* Distances between particles of different order parameters, the key is
+   * ((op_a, particle_a), (op_b, particle_b)). */
+  using CrossOpDistances =
+    std::map<std::pair<std::pair<unsigned int, unsigned int>,
+                       std::pair<unsigned int, unsigned int>>,
+             double>;
+
+  /* Estimate distances between the particles of one order parameter by
+   * growing wavefronts from them. If all_particle_ids and cross_op_distances
+   * are provided, then the distances from these particles to the particles of
+   * all the other order parameters are estimated as well: the wavefront passes
+   * through the other particles, so that the distance is known even if there
+   * is some other grain in between. */
+  template <int dim,
+            typename VectorIds,
+            typename BlockVectorIds = std::nullptr_t>
   std::map<std::pair<unsigned int, unsigned int>, double>
   estimate_particle_distances(const VectorIds       &particle_ids,
                               const DoFHandler<dim> &dof_handler,
                               const double           invalid_particle_id = -1.0,
-                              MyTimerOutput         *timer    = nullptr,
-                              DataOut<dim>          *data_out = nullptr)
+                              MyTimerOutput         *timer            = nullptr,
+                              DataOut<dim>          *data_out         = nullptr,
+                              const BlockVectorIds  *all_particle_ids = nullptr,
+                              const unsigned int     op_index         = 0,
+                              CrossOpDistances *cross_op_distances    = nullptr)
   {
     ScopedName sc("estimate_particle_distances");
     MyScope    scope(sc, timer);
@@ -977,6 +995,80 @@ namespace GrainTracker
     if (need_to_zero_out)
       particle_distances.zero_out_ghost_values();
 
+    /* Distances from the particles of this order parameter to the particles
+     * of the other order parameters: each cell is labeled with the nearest
+     * particle of this order parameter, so for the particles that cover the
+     * cell we have the distance to that nearest particle. */
+    if constexpr (!std::is_same_v<BlockVectorIds, std::nullptr_t>)
+      if (all_particle_ids != nullptr && cross_op_distances != nullptr)
+        {
+          std::map<std::array<unsigned int, 4>, double> local_cross;
+
+          for (const auto &cell : dof_handler.active_cell_iterators())
+            if (cell->is_locally_owned())
+              {
+                const auto index  = cell->global_active_cell_index();
+                const auto marker = particle_markers[index];
+
+                if (marker == invalid_particle_id)
+                  continue;
+
+                const double dist =
+                  (particle_ids[index] != invalid_particle_id) ?
+                    0. :
+                    h_cell * particle_distances[index];
+
+                for (unsigned int j = 0; j < all_particle_ids->n_blocks(); ++j)
+                  if (j != op_index)
+                    {
+                      const auto other_id = all_particle_ids->block(j)[index];
+
+                      if (other_id == invalid_particle_id)
+                        continue;
+
+                      const std::array<unsigned int, 4> key{
+                        {op_index,
+                         static_cast<unsigned int>(marker),
+                         j,
+                         static_cast<unsigned int>(other_id)}};
+
+                      const auto [it, inserted] =
+                        local_cross.try_emplace(key, dist);
+                      if (!inserted)
+                        it->second = std::min(it->second, dist);
+                    }
+              }
+
+          std::vector<double> cross_flatten;
+          for (const auto &[key, dist] : local_cross)
+            {
+              cross_flatten.insert(cross_flatten.end(),
+                                   {static_cast<double>(key[0]),
+                                    static_cast<double>(key[1]),
+                                    static_cast<double>(key[2]),
+                                    static_cast<double>(key[3]),
+                                    dist});
+            }
+
+          const auto global_cross =
+            Utilities::MPI::all_gather(comm, cross_flatten);
+
+          for (const auto &cross_set : global_cross)
+            for (unsigned int i = 0; i < cross_set.size(); i += 5)
+              {
+                const auto key = std::make_pair(
+                  std::make_pair(static_cast<unsigned int>(cross_set[i]),
+                                 static_cast<unsigned int>(cross_set[i + 1])),
+                  std::make_pair(static_cast<unsigned int>(cross_set[i + 2]),
+                                 static_cast<unsigned int>(cross_set[i + 3])));
+
+                const auto [it, inserted] =
+                  cross_op_distances->try_emplace(key, cross_set[i + 4]);
+                if (!inserted)
+                  it->second = std::min(it->second, cross_set[i + 4]);
+              }
+        }
+
     // Convert map to a vector
     std::vector<double> distances_flatten;
     for (const auto &[from_to, dist] : assessment_distances)
@@ -1081,42 +1173,47 @@ namespace GrainTracker
                     }
 
                   for (const auto face : cell->face_indices())
-                    if (!cell->at_boundary(face))
-                      {
-                        const auto neighbor = cell->neighbor(face);
+                    {
+                      const bool is_periodic =
+                        cell->has_periodic_neighbor(face);
 
-                        if (!neighbor->has_children())
-                          {
-                            const auto neighbor_pid_j = particle_ids.block(
-                              j)[neighbor->global_active_cell_index()];
+                      if (cell->at_boundary(face) && !is_periodic)
+                        continue;
 
-                            if (neighbor_pid_j != invalid_particle_id)
+                      const auto neighbor = is_periodic ?
+                                              cell->periodic_neighbor(face) :
+                                              cell->neighbor(face);
+
+                      if (!neighbor->has_children())
+                        {
+                          const auto neighbor_pid_j = particle_ids.block(
+                            j)[neighbor->global_active_cell_index()];
+
+                          if (neighbor_pid_j != invalid_particle_id)
+                            {
+                              const auto pj = std::make_pair(j, neighbor_pid_j);
+
+                              add_neighbors(pi, pj);
+                            }
+                        }
+                      else
+                        {
+                          for (const auto &child : neighbor->child_iterators())
+                            if (child->is_active() && !child->is_artificial())
                               {
-                                const auto pj =
-                                  std::make_pair(j, neighbor_pid_j);
+                                const auto child_pid_j = particle_ids.block(
+                                  j)[child->global_active_cell_index()];
 
-                                add_neighbors(pi, pj);
+                                if (child_pid_j != invalid_particle_id)
+                                  {
+                                    const auto pj =
+                                      std::make_pair(j, child_pid_j);
+
+                                    add_neighbors(pi, pj);
+                                  }
                               }
-                          }
-                        else
-                          {
-                            for (const auto &child :
-                                 neighbor->child_iterators())
-                              if (child->is_active() && !child->is_artificial())
-                                {
-                                  const auto child_pid_j = particle_ids.block(
-                                    j)[child->global_active_cell_index()];
-
-                                  if (child_pid_j != invalid_particle_id)
-                                    {
-                                      const auto pj =
-                                        std::make_pair(j, child_pid_j);
-
-                                      add_neighbors(pi, pj);
-                                    }
-                                }
-                          }
-                      }
+                        }
+                    }
                 }
           }
 

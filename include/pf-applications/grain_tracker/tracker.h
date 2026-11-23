@@ -1287,6 +1287,33 @@ namespace GrainTracker
                                                 op_particle_ids,
                                                 invalid_particle_id);
 
+      /* Estimate distances between the particles, including those that sit on
+       * different order parameters, since any grain can be reassigned to any
+       * order parameter. */
+      std::vector<std::map<std::pair<unsigned int, unsigned int>, double>>
+                       same_op_distances(n_order_params);
+      CrossOpDistances cross_op_distances;
+      if (grain_representation == GrainRepresentation::wavefront)
+        for (unsigned int op = 0; op < n_order_params; ++op)
+          {
+            const bool had_ghosts =
+              op_particle_ids.block(op).has_ghost_elements();
+
+            same_op_distances[op] =
+              estimate_particle_distances(op_particle_ids.block(op),
+                                          dof_handler,
+                                          invalid_particle_id,
+                                          timer.is_enabled() ? &timer : nullptr,
+                                          static_cast<DataOut<dim> *>(nullptr),
+                                          &op_particle_ids,
+                                          op,
+                                          &cross_op_distances);
+
+            // The estimation zeroes out the ghosts, which are needed later
+            if (had_ghosts)
+              op_particle_ids.block(op).update_ghost_values();
+          }
+
       for (unsigned int current_order_parameter_id = 0;
            current_order_parameter_id < n_order_params;
            ++current_order_parameter_id)
@@ -1409,30 +1436,52 @@ namespace GrainTracker
             particle_distances(n_particles);
           if (grain_representation == GrainRepresentation::wavefront)
             {
-              // Estimate particle distances
-              const auto distances_estimation =
-                estimate_particle_distances(particle_ids,
-                                            dof_handler,
-                                            invalid_particle_id,
-                                            timer.is_enabled() ? &timer :
-                                                                 nullptr);
-
               // Build particle distances data
               particle_distances.resize(n_particles);
 
-              for (const auto &[key, dist] : distances_estimation)
+              const auto add_distance = [&](const unsigned int index,
+                                            const unsigned int other_op,
+                                            const unsigned int other_index,
+                                            const double       dist) {
+                const auto [it, inserted] =
+                  particle_distances[index].try_emplace(
+                    std::make_pair(other_op, other_index), dist);
+                if (!inserted)
+                  it->second = std::min(it->second, dist);
+              };
+
+              for (const auto &[key, dist] :
+                   same_op_distances[current_order_parameter_id])
                 {
-                  particle_distances[key.first].emplace(
-                    std::make_pair(current_order_parameter_id, key.second),
-                    dist);
-                  particle_distances[key.second].emplace(
-                    std::make_pair(current_order_parameter_id, key.first),
-                    dist);
+                  add_distance(key.first,
+                               current_order_parameter_id,
+                               key.second,
+                               dist);
+                  add_distance(key.second,
+                               current_order_parameter_id,
+                               key.first,
+                               dist);
                 }
+
+              for (const auto &[key, dist] : cross_op_distances)
+                {
+                  if (key.first.first == current_order_parameter_id)
+                    add_distance(key.first.second,
+                                 key.second.first,
+                                 key.second.second,
+                                 dist);
+
+                  if (key.second.first == current_order_parameter_id)
+                    add_distance(key.second.second,
+                                 key.first.first,
+                                 key.first.second,
+                                 dist);
+                }
+
               for (const auto &[primary, secondaries] : direct_neighbors)
                 if (primary.first == current_order_parameter_id)
                   for (const auto &secondary : secondaries)
-                    particle_distances[primary.second].emplace(
+                    particle_distances[primary.second].insert_or_assign(
                       std::make_pair(secondary.first, secondary.second), 0);
             }
 
