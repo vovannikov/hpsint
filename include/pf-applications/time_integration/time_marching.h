@@ -109,6 +109,18 @@ namespace TimeIntegration
 
       auto &j_op = *jacobian_operator;
 
+      if (nonlinear_params.check_jacobian)
+        {
+          if (nonlinear_params.jacobi_free)
+            jacobian_check =
+              std::make_unique<JacobianWrapper<Number, NonLinearOperator>>(
+                nonlinear_operator);
+          else
+            jacobian_check =
+              std::make_unique<JacobianFree<Number, ResidualWrapper<Number>>>(
+                residual_wrapper);
+        }
+
       preconditioner.set_jacobian(
         [&j_op](auto &dst, const auto &src) { j_op.vmult(dst, src); });
       preconditioner_with_jacobian = &preconditioner;
@@ -180,6 +192,9 @@ namespace TimeIntegration
             }
 
           j_op.reinit(current_u);
+
+          if (jacobian_check)
+            jacobian_check->reinit(current_u);
         };
 
       // Lambda to update preconditioner
@@ -329,6 +344,28 @@ namespace TimeIntegration
 
           for (unsigned int b = 0; b < src.n_blocks(); ++b)
             constraints.distribute(dst.block(b));
+
+          if (jacobian_check)
+            {
+              VectorType j_dst, check_dst;
+              j_dst.reinit(dst);
+              check_dst.reinit(dst);
+
+              j_op.vmult(j_dst, dst);
+              jacobian_check->vmult(check_dst, dst);
+
+              stream << " - jacobian check |J du| / |J du - J_"
+                     << (nonlinear_params.jacobi_free ? "analytic" : "fd")
+                     << " du| per block:";
+              for (unsigned int b = 0; b < dst.n_blocks(); ++b)
+                {
+                  const auto norm = j_dst.block(b).l2_norm();
+                  check_dst.block(b) -= j_dst.block(b);
+                  stream << " " << b << ":" << norm << "/"
+                         << check_dst.block(b).l2_norm();
+                }
+              stream << std::endl;
+            }
 
           if (nonlinear_params.verbosity >= 2 &&
               !solver_control_l->get_history_data().empty())
@@ -683,6 +720,8 @@ namespace TimeIntegration
     std::unique_ptr<LinearSolvers::LinearSolverBase<Number>> linear_solver;
 
     std::unique_ptr<JacobianBase<Number>> jacobian_operator;
+
+    std::unique_ptr<JacobianBase<Number>> jacobian_check;
 
     Preconditioners::PreconditionerBase<Number> *preconditioner_with_jacobian;
 

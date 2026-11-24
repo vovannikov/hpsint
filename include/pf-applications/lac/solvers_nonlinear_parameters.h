@@ -73,6 +73,7 @@ namespace NonLinearSolvers
     bool fdm_jacobian_approximation       = false;
     bool fdm_precond_system_approximation = false;
     bool jacobi_free                      = false;
+    bool check_jacobian                   = false;
 
     unsigned int verbosity = 1;
 

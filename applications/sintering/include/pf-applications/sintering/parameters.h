@@ -1110,6 +1110,11 @@ namespace Sintering
       prm.add_parameter("FDMPrecondSystemApproximation",
                         nonlinear_data.fdm_precond_system_approximation);
       prm.add_parameter("JacobiFree", nonlinear_data.jacobi_free);
+      prm.add_parameter(
+        "CheckJacobian",
+        nonlinear_data.check_jacobian,
+        "Compare the analytic and the Jacobian-free products on each Newton "
+        "update and print the per-block differences (expensive, debug only).");
       prm.add_parameter("Verbosity", nonlinear_data.verbosity);
 
       prm.enter_subsection("NOXData");
