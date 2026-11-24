@@ -15,9 +15,88 @@
 
 #include <pf-applications/base/timer.h>
 
+#include <boost/serialization/map.hpp>
+#include <boost/serialization/string.hpp>
+
+#include <algorithm>
+#include <iomanip>
 #include <iostream>
 
 using namespace dealii;
+
+void
+MemoryTracker::enable(const bool flag_)
+{
+  flag() = flag_;
+}
+
+bool
+MemoryTracker::enabled()
+{
+  return flag();
+}
+
+double
+MemoryTracker::current_rss_gb()
+{
+  Utilities::System::MemoryStats stats;
+  Utilities::System::get_memory_stats(stats);
+
+  return stats.VmRSS / 1e6;
+}
+
+void
+MemoryTracker::record(const std::string &section, const double delta_gb)
+{
+  data()[section] += delta_gb;
+}
+
+void
+MemoryTracker::print(std::ostream &out, const unsigned int n_entries)
+{
+  // Sections may differ between ranks, so gather them on rank 0
+  const auto all_data = Utilities::MPI::gather(MPI_COMM_WORLD, data(), 0);
+
+  if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) != 0)
+    return;
+
+  std::map<std::string, std::pair<double, double>> sum_max;
+  for (const auto &rank_data : all_data)
+    for (const auto &[section, delta] : rank_data)
+      {
+        auto &entry = sum_max[section];
+        entry.first += delta;
+        entry.second = std::max(entry.second, delta);
+      }
+
+  std::vector<std::pair<std::string, std::pair<double, double>>> sorted(
+    sum_max.begin(), sum_max.end());
+  std::sort(sorted.begin(), sorted.end(), [](const auto &a, const auto &b) {
+    return a.second.first > b.second.first;
+  });
+
+  out << "RSS growth per section [GB] (sum over ranks / max rank):"
+      << std::endl;
+  for (unsigned int i = 0; i < std::min<std::size_t>(n_entries, sorted.size());
+       ++i)
+    out << "  " << std::setw(12) << sorted[i].second.first << " / "
+        << std::setw(10) << sorted[i].second.second << "  " << sorted[i].first
+        << std::endl;
+}
+
+std::map<std::string, double> &
+MemoryTracker::data()
+{
+  static std::map<std::string, double> data;
+  return data;
+}
+
+bool &
+MemoryTracker::flag()
+{
+  static bool flag = false;
+  return flag;
+}
 
 void
 monitor(const std::string label)
@@ -330,6 +409,9 @@ MyScope::~MyScope()
 void
 MyScope::enter()
 {
+  if (MemoryTracker::enabled())
+    rss_enter = MemoryTracker::current_rss_gb();
+
 #ifdef WITH_TIMING_OUTPUT
   if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
     std::cout << ">>> MyScope: entering <" << section_name << ">" << std::endl;
@@ -340,6 +422,10 @@ MyScope::enter()
 void
 MyScope::leave()
 {
+  if (MemoryTracker::enabled())
+    MemoryTracker::record(section_name,
+                          MemoryTracker::current_rss_gb() - rss_enter);
+
 #ifdef WITH_TIMING_OUTPUT
   if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
     std::cout << ">>> MyScope: leaving <" << section_name << ">" << std::endl;

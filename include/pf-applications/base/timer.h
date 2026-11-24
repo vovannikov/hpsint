@@ -17,10 +17,39 @@
 
 #include <deal.II/base/timer.h>
 
+#include <map>
 #include <memory>
 
 void
 monitor(const std::string label);
+
+// Accumulates the growth of the resident memory per MyScope section
+class MemoryTracker
+{
+public:
+  static void
+  enable(const bool flag);
+
+  static bool
+  enabled();
+
+  static double
+  current_rss_gb();
+
+  static void
+  record(const std::string &section, const double delta_gb);
+
+  // Collective, prints the sections with the largest growth summed over ranks
+  static void
+  print(std::ostream &out, const unsigned int n_entries = 30);
+
+private:
+  static std::map<std::string, double> &
+  data();
+
+  static bool &
+  flag();
+};
 
 class MyTimerOutput;
 
@@ -157,6 +186,8 @@ private:
   leave();
 
   const std::string section_name;
+
+  double rss_enter = 0.;
 
   std::unique_ptr<dealii::TimerOutput::Scope> scope;
 };

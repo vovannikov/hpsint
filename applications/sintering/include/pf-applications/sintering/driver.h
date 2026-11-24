@@ -1271,6 +1271,7 @@ namespace Sintering
 
       MyTimerOutput timer(pcout.get_stream());
       TimerCollection::configure(params.profiling_data.output_time_interval);
+      MemoryTracker::enable(params.profiling_data.track_memory);
 
       // Define vector to store additional initializers for additional vectors
       std::vector<std::function<void()>> additional_initializations;
@@ -2655,6 +2656,9 @@ namespace Sintering
                       }
 
                     MPI_Comm_free(&node_comm);
+
+                    if (MemoryTracker::enabled())
+                      MemoryTracker::print(pcout.get_stream());
                   }
 
                 // Posptrocessing to calculate divergences of fluxes

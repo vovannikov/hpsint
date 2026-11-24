@@ -311,6 +311,7 @@ namespace Sintering
     bool   run_vmults                = false;
     double output_time_interval      = -1.0; // default: never
     bool   output_memory_consumption = false;
+    bool   track_memory              = false;
   };
 
   struct Parameters
@@ -1305,6 +1306,11 @@ namespace Sintering
       prm.add_parameter("OutputMemoryConsumption",
                         profiling_data.output_memory_consumption,
                         "Output memory consumption.");
+      prm.add_parameter(
+        "TrackMemory",
+        profiling_data.track_memory,
+        "Accumulate the resident memory growth per timer section and print it "
+        "with the memory consumption (debug only).");
       prm.add_parameter("OutputTimeInterval",
                         profiling_data.output_time_interval,
                         "Specify the inverval to print timings in seconds.");
