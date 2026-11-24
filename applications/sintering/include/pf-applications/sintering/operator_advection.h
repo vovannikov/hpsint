@@ -24,6 +24,7 @@
 #include <pf-applications/grain_tracker/tracker.h>
 #include <pf-applications/matrix_free/tools.h>
 
+#include <cstdint>
 #include <functional>
 
 namespace Sintering
@@ -500,15 +501,26 @@ namespace Sintering
 
       const auto n_segments = grain_tracker.n_segments();
 
-      advection_mechanism.nullify_data(n_segments);
+      {
+        MyScope scope(timer,
+                      "advection_op_wgt::evaluate_forces::init",
+                      do_timing);
+
+        advection_mechanism.nullify_data(n_segments);
+
+        // TODO: optimize - use sparsity pattern based on particle interactions
+        grains_data_forces_gbs.assign(n_segments * n_comp_force_gb * n_segments,
+                                      0.);
+        grains_data_volumes.assign(n_segments, 0.);
+      }
 
       // We do not have an output vector
       BlockVectorType dummy(1);
 
-      // TODO: optimize - use sparsity pattern based on particle interactions
-      grains_data_forces_gbs.assign(n_segments * n_comp_force_gb * n_segments,
-                                    0.);
-      grains_data_volumes.assign(n_segments, 0.);
+      {
+        MyScope scope(timer,
+                      "advection_op_wgt::evaluate_forces::cell_loop",
+                      do_timing);
 
 #define OPERATION(c, d)                                   \
   MyMatrixFreeTools::cell_loop_wrapper(                   \
@@ -519,16 +531,55 @@ namespace Sintering
     src,                                                  \
     pre_operation,                                        \
     post_operation);
-      EXPAND_OPERATIONS(OPERATION);
+        EXPAND_OPERATIONS(OPERATION);
 #undef OPERATION
+      }
 
-      // Perform global communication
-      MPI_Allreduce(MPI_IN_PLACE,
-                    grains_data_forces_gbs.data(),
-                    grains_data_forces_gbs.size(),
-                    Utilities::MPI::mpi_type_id_for_type<Number>,
-                    MPI_SUM,
-                    MPI_COMM_WORLD);
+      MyScope scope_reduce(timer,
+                           "advection_op_wgt::evaluate_forces::allreduce",
+                           do_timing);
+
+      // Only touching segment pairs are nonzero: agree on them via a bitmask
+      // and reduce just their data instead of the dense n_segments^2 array
+      {
+        const std::size_t n_pairs = std::size_t(n_segments) * n_segments;
+        std::vector<std::uint64_t> active((n_pairs + 63) / 64, 0);
+
+        for (std::size_t p = 0; p < n_pairs; ++p)
+          for (unsigned int c = 0; c < n_comp_force_gb; ++c)
+            if (grains_data_forces_gbs[n_comp_force_gb * p + c] != 0.)
+              {
+                active[p / 64] |= std::uint64_t(1) << (p % 64);
+                break;
+              }
+
+        MPI_Allreduce(MPI_IN_PLACE,
+                      active.data(),
+                      active.size(),
+                      MPI_UINT64_T,
+                      MPI_BOR,
+                      MPI_COMM_WORLD);
+
+        std::vector<Number> compact;
+        for (std::size_t p = 0; p < n_pairs; ++p)
+          if (active[p / 64] & (std::uint64_t(1) << (p % 64)))
+            for (unsigned int c = 0; c < n_comp_force_gb; ++c)
+              compact.push_back(
+                grains_data_forces_gbs[n_comp_force_gb * p + c]);
+
+        MPI_Allreduce(MPI_IN_PLACE,
+                      compact.data(),
+                      compact.size(),
+                      Utilities::MPI::mpi_type_id_for_type<Number>,
+                      MPI_SUM,
+                      MPI_COMM_WORLD);
+
+        auto it = compact.begin();
+        for (std::size_t p = 0; p < n_pairs; ++p)
+          if (active[p / 64] & (std::uint64_t(1) << (p % 64)))
+            for (unsigned int c = 0; c < n_comp_force_gb; ++c)
+              grains_data_forces_gbs[n_comp_force_gb * p + c] = *(it++);
+      }
 
       // Perform global communication
       MPI_Allreduce(MPI_IN_PLACE,

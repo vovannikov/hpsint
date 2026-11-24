@@ -44,7 +44,7 @@ public:
   print(std::ostream &out, const unsigned int n_entries = 30);
 
 private:
-  static std::map<std::string, double> &
+  static std::map<std::string, std::pair<double, unsigned int>> &
   data();
 
   static bool &

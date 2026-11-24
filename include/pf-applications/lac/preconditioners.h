@@ -221,6 +221,26 @@ namespace Preconditioners
       diagonal_matrix.vmult(dst, src);
     }
 
+    bool
+    supports_vmult_block() const override
+    {
+      return true;
+    }
+
+    void
+    vmult_block(
+      const unsigned int b,
+      typename PreconditionerBase<typename Operator::value_type>::VectorType
+        &dst,
+      const typename PreconditionerBase<
+        typename Operator::value_type>::VectorType &src) const override
+    {
+      const auto &diagonal = diagonal_matrix.get_vector().block(b);
+
+      for (unsigned int i = 0; i < dst.locally_owned_size(); ++i)
+        dst.local_element(i) = diagonal.local_element(i) * src.local_element(i);
+    }
+
     void
     do_update() override
     {

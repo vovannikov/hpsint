@@ -17,6 +17,7 @@
 
 #include <boost/serialization/map.hpp>
 #include <boost/serialization/string.hpp>
+#include <boost/serialization/utility.hpp>
 
 #include <algorithm>
 #include <iomanip>
@@ -48,7 +49,9 @@ MemoryTracker::current_rss_gb()
 void
 MemoryTracker::record(const std::string &section, const double delta_gb)
 {
-  data()[section] += delta_gb;
+  auto &entry = data()[section];
+  entry.first += delta_gb;
+  entry.second += 1;
 }
 
 void
@@ -60,34 +63,42 @@ MemoryTracker::print(std::ostream &out, const unsigned int n_entries)
   if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) != 0)
     return;
 
-  std::map<std::string, std::pair<double, double>> sum_max;
+  struct Entry
+  {
+    double       sum     = 0.;
+    double       max     = 0.;
+    unsigned int n_calls = 0;
+  };
+
+  std::map<std::string, Entry> entries;
   for (const auto &rank_data : all_data)
-    for (const auto &[section, delta] : rank_data)
+    for (const auto &[section, delta_and_calls] : rank_data)
       {
-        auto &entry = sum_max[section];
-        entry.first += delta;
-        entry.second = std::max(entry.second, delta);
+        auto &entry = entries[section];
+        entry.sum += delta_and_calls.first;
+        entry.max     = std::max(entry.max, delta_and_calls.first);
+        entry.n_calls = std::max(entry.n_calls, delta_and_calls.second);
       }
 
-  std::vector<std::pair<std::string, std::pair<double, double>>> sorted(
-    sum_max.begin(), sum_max.end());
+  std::vector<std::pair<std::string, Entry>> sorted(entries.begin(),
+                                                    entries.end());
   std::sort(sorted.begin(), sorted.end(), [](const auto &a, const auto &b) {
-    return a.second.first > b.second.first;
+    return a.second.sum > b.second.sum;
   });
 
-  out << "RSS growth per section [GB] (sum over ranks / max rank):"
+  out << "RSS growth per section [GB] (sum over ranks / max rank / calls):"
       << std::endl;
   for (unsigned int i = 0; i < std::min<std::size_t>(n_entries, sorted.size());
        ++i)
-    out << "  " << std::setw(12) << sorted[i].second.first << " / "
-        << std::setw(10) << sorted[i].second.second << "  " << sorted[i].first
-        << std::endl;
+    out << "  " << std::setw(12) << sorted[i].second.sum << " / "
+        << std::setw(10) << sorted[i].second.max << " / " << std::setw(8)
+        << sorted[i].second.n_calls << "  " << sorted[i].first << std::endl;
 }
 
-std::map<std::string, double> &
+std::map<std::string, std::pair<double, unsigned int>> &
 MemoryTracker::data()
 {
-  static std::map<std::string, double> data;
+  static std::map<std::string, std::pair<double, unsigned int>> data;
   return data;
 }
 

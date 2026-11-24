@@ -1082,8 +1082,9 @@ namespace Sintering
       if (data.block_1_gauss_seidel)
         {
           AssertThrow(preconditioner_1->supports_vmult_block(),
-                      ExcMessage("Block1GaussSeidel requires Block1 of type "
-                                 "BlockILU or BlockAMG"));
+                      ExcMessage(
+                        "Block1GaussSeidel requires Block1 of type "
+                        "BlockILU, BlockAMG or InverseDiagonalMatrix"));
           AssertThrow(has_vmult_coupling_order_parameters,
                       ExcMessage("Block1GaussSeidel is not supported by the "
                                  "nonlinear operator"));
@@ -1280,12 +1281,11 @@ namespace Sintering
         }
       if (preconditioner_1)
         {
-          MyScope scope(
-            timer,
-            "precon::update::precon_1"); // Blocked variants assemble their own
-                                         // matrix via operator_1_blocked
-          if (data.block_1.type != "BlockAMG" &&
-              data.block_1.type != "BlockILU")
+          MyScope scope(timer, "precon::update::precon_1");
+          // The full AC matrix couples all grains and is huge, assemble it
+          // only if the preconditioner needs it
+          if (static_cast<bool>(preconditioner_1->underlying_entity() &
+                                Preconditioners::UnderlyingEntity::System))
             operator_1->initialize_system_matrix(true, print_stats);
           preconditioner_1->do_update();
         }
