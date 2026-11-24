@@ -2621,6 +2621,40 @@ namespace Sintering
                           << mc_solution_history / 1e9 << std::endl;
                     pcout << " - preconditioner:      "
                           << mc_preconditioner / 1e9 << std::endl;
+
+                    // The estimates above miss e.g. Trilinos factorizations,
+                    // AMG hierarchies and Krylov bases, so report the RSS too
+                    Utilities::System::MemoryStats stats;
+                    Utilities::System::get_memory_stats(stats);
+
+                    MPI_Comm node_comm;
+                    MPI_Comm_split_type(MPI_COMM_WORLD,
+                                        MPI_COMM_TYPE_SHARED,
+                                        0,
+                                        MPI_INFO_NULL,
+                                        &node_comm);
+
+                    for (const auto &[label, kb] :
+                         {std::pair<std::string, double>{"current",
+                                                         stats.VmRSS},
+                          {"peak   ", stats.VmHWM}})
+                      {
+                        const double gb = kb / 1e6;
+                        const auto   rank_stats =
+                          Utilities::MPI::min_max_avg(gb, MPI_COMM_WORLD);
+                        const double node_gb =
+                          Utilities::MPI::sum(gb, node_comm);
+
+                        pcout << " - RSS " << label
+                              << " [GB]: total = " << rank_stats.sum
+                              << ", per rank max = " << rank_stats.max
+                              << " (rank " << rank_stats.max_index
+                              << "), per node max = "
+                              << Utilities::MPI::max(node_gb, MPI_COMM_WORLD)
+                              << std::endl;
+                      }
+
+                    MPI_Comm_free(&node_comm);
                   }
 
                 // Posptrocessing to calculate divergences of fluxes

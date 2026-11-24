@@ -354,6 +354,14 @@ namespace TimeIntegration
               j_op.vmult(j_dst, dst);
               jacobian_check->vmult(check_dst, dst);
 
+              // Constrained rows are identity in one operator and zero in the
+              // other, they do not enter the Newton update anyway
+              for (unsigned int b = 0; b < dst.n_blocks(); ++b)
+                {
+                  constraints.set_zero(j_dst.block(b));
+                  constraints.set_zero(check_dst.block(b));
+                }
+
               stream << " - jacobian check |J du| / |J du - J_"
                      << (nonlinear_params.jacobi_free ? "analytic" : "fd")
                      << " du| per block:";
