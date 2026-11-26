@@ -24,8 +24,11 @@
 #include <pf-applications/grain_tracker/tracker.h>
 #include <pf-applications/matrix_free/tools.h>
 
+#include <array>
 #include <cstdint>
 #include <functional>
+#include <map>
+#include <unordered_map>
 
 namespace Sintering
 {
@@ -508,9 +511,7 @@ namespace Sintering
 
         advection_mechanism.nullify_data(n_segments);
 
-        // TODO: optimize - use sparsity pattern based on particle interactions
-        grains_data_forces_gbs.assign(n_segments * n_comp_force_gb * n_segments,
-                                      0.);
+        pair_data.clear();
         grains_data_volumes.assign(n_segments, 0.);
       }
 
@@ -539,46 +540,68 @@ namespace Sintering
                            "advection_op_wgt::evaluate_forces::allreduce",
                            do_timing);
 
-      // Only touching segment pairs are nonzero: agree on them via a bitmask
-      // and reduce just their data instead of the dense n_segments^2 array
+      // Gather the locally touched segment pairs from all ranks and sum them,
+      // in rank order so that all ranks get identical results
+      std::map<std::uint64_t, std::array<Number, n_comp_force_gb>>
+        global_pair_data;
       {
-        const std::size_t n_pairs = std::size_t(n_segments) * n_segments;
-        std::vector<std::uint64_t> active((n_pairs + 63) / 64, 0);
+        std::vector<std::uint64_t> keys;
+        std::vector<Number>        values;
+        keys.reserve(pair_data.size());
+        values.reserve(n_comp_force_gb * pair_data.size());
+        for (const auto &[key, value] : pair_data)
+          {
+            keys.push_back(key);
+            values.insert(values.end(), value.begin(), value.end());
+          }
 
-        for (std::size_t p = 0; p < n_pairs; ++p)
-          for (unsigned int c = 0; c < n_comp_force_gb; ++c)
-            if (grains_data_forces_gbs[n_comp_force_gb * p + c] != 0.)
-              {
-                active[p / 64] |= std::uint64_t(1) << (p % 64);
-                break;
-              }
+        const int  n_local = keys.size();
+        const auto n_ranks = Utilities::MPI::n_mpi_processes(MPI_COMM_WORLD);
 
-        MPI_Allreduce(MPI_IN_PLACE,
-                      active.data(),
-                      active.size(),
-                      MPI_UINT64_T,
-                      MPI_BOR,
-                      MPI_COMM_WORLD);
+        std::vector<int> counts(n_ranks);
+        MPI_Allgather(
+          &n_local, 1, MPI_INT, counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
 
-        std::vector<Number> compact;
-        for (std::size_t p = 0; p < n_pairs; ++p)
-          if (active[p / 64] & (std::uint64_t(1) << (p % 64)))
+        std::vector<int> displs(n_ranks, 0);
+        for (unsigned int r = 1; r < n_ranks; ++r)
+          displs[r] = displs[r - 1] + counts[r - 1];
+        const int n_global = displs.back() + counts.back();
+
+        std::vector<std::uint64_t> all_keys(n_global);
+        MPI_Allgatherv(keys.data(),
+                       n_local,
+                       MPI_UINT64_T,
+                       all_keys.data(),
+                       counts.data(),
+                       displs.data(),
+                       MPI_UINT64_T,
+                       MPI_COMM_WORLD);
+
+        for (unsigned int r = 0; r < n_ranks; ++r)
+          {
+            counts[r] *= n_comp_force_gb;
+            displs[r] *= n_comp_force_gb;
+          }
+
+        std::vector<Number> all_values(n_comp_force_gb * n_global);
+        MPI_Allgatherv(values.data(),
+                       n_comp_force_gb * n_local,
+                       Utilities::MPI::mpi_type_id_for_type<Number>,
+                       all_values.data(),
+                       counts.data(),
+                       displs.data(),
+                       Utilities::MPI::mpi_type_id_for_type<Number>,
+                       MPI_COMM_WORLD);
+
+        for (int e = 0; e < n_global; ++e)
+          {
+            auto &entry =
+              global_pair_data
+                .try_emplace(all_keys[e], std::array<Number, n_comp_force_gb>{})
+                .first->second;
             for (unsigned int c = 0; c < n_comp_force_gb; ++c)
-              compact.push_back(
-                grains_data_forces_gbs[n_comp_force_gb * p + c]);
-
-        MPI_Allreduce(MPI_IN_PLACE,
-                      compact.data(),
-                      compact.size(),
-                      Utilities::MPI::mpi_type_id_for_type<Number>,
-                      MPI_SUM,
-                      MPI_COMM_WORLD);
-
-        auto it = compact.begin();
-        for (std::size_t p = 0; p < n_pairs; ++p)
-          if (active[p / 64] & (std::uint64_t(1) << (p % 64)))
-            for (unsigned int c = 0; c < n_comp_force_gb; ++c)
-              grains_data_forces_gbs[n_comp_force_gb * p + c] = *(it++);
+              entry[c] += all_values[n_comp_force_gb * e + c];
+          }
       }
 
       // Perform global communication
@@ -589,33 +612,30 @@ namespace Sintering
                     MPI_SUM,
                     MPI_COMM_WORLD);
 
-      // Compute forces and communicate them to the regular advection, the
-      // index data filled in the cell loop has to be kept
+      // Pair entries (a, b) with a < b hold F_ab, and F_ba = -F_ab
+      std::vector<Tensor<1, dim, Number>> forces(n_segments);
+      for (const auto &[key, value] : global_pair_data)
+        {
+          const unsigned int a     = key >> 32;
+          const unsigned int b     = key & 0xffffffff;
+          const auto         gb_ab = value[dim];
+
+          if (std::abs(gb_ab) > 1e-10)
+            for (unsigned int d = 0; d < dim; ++d)
+              {
+                forces[a][d] += value[d] / gb_ab;
+                forces[b][d] -= value[d] / gb_ab;
+              }
+        }
+
+      // Communicate the forces to the regular advection, the index data
+      // filled in the cell loop has to be kept
       for (unsigned int i = 0; i < n_segments; ++i)
         {
-          const auto it =
-            grains_data_forces_gbs.begin() + i * (n_comp_force_gb * n_segments);
-
-          Tensor<1, dim, Number> force_i;
-          for (unsigned int j = 0; j < n_segments; ++j)
-            {
-              const auto offset_ij = it + j * n_comp_force_gb;
-              const auto gb_ij     = *(offset_ij + dim);
-
-              if (i != j && std::abs(gb_ij) > 1e-10)
-                {
-                  Tensor<1, dim, Number> force_ij(
-                    make_array_view(offset_ij, offset_ij + dim));
-
-                  force_ij *= 1. / gb_ij;
-                  force_i += force_ij;
-                }
-            }
-
           advection_mechanism.grain_data(i)[0] = grains_data_volumes[i];
 
           for (unsigned int d = 0; d < dim; ++d)
-            advection_mechanism.grain_data(i)[d + 1] = force_i[d];
+            advection_mechanism.grain_data(i)[d + 1] = forces[i][d];
 
           for (unsigned int d = 1 + dim;
                d < AdvectionMechanism<dim, Number, VectorizedArrayType>::
@@ -835,8 +855,6 @@ namespace Sintering
 
                   const auto force_gb = phi_fg.integrate_value();
 
-                  const auto n_segments = grain_tracker.n_segments();
-
                   for (unsigned int v = 0; v < n_lanes; ++v)
                     {
                       const auto segment_index_i = segment_indices[ig][v];
@@ -844,28 +862,29 @@ namespace Sintering
 
                       if (segment_index_i == numbers::invalid_unsigned_int ||
                           segment_index_j == numbers::invalid_unsigned_int ||
+                          segment_index_i == segment_index_j ||
                           eta_max_ij[v] < pair_tolerance)
                         continue;
 
-                      const auto offset_ij =
-                        n_comp_force_gb *
-                        (n_segments * segment_index_i + segment_index_j);
-                      const auto offset_ji =
-                        n_comp_force_gb *
-                        (n_segments * segment_index_j + segment_index_i);
+                      // Store F_ab for a < b only, F_ba = -F_ab
+                      const bool   ordered = segment_index_i < segment_index_j;
+                      const Number sign    = ordered ? 1. : -1.;
+                      const auto   key =
+                        (std::uint64_t(ordered ? segment_index_i :
+                                                 segment_index_j)
+                         << 32) |
+                        (ordered ? segment_index_j : segment_index_i);
+
+                      auto &entry =
+                        pair_data
+                          .try_emplace(key,
+                                       std::array<Number, n_comp_force_gb>{})
+                          .first->second;
 
                       for (unsigned int d = 0; d < dim; ++d)
-                        {
-                          grains_data_forces_gbs[offset_ij + d] +=
-                            force_gb[d][v];
-                          grains_data_forces_gbs[offset_ji + d] -=
-                            force_gb[d][v];
-                        }
+                        entry[d] += sign * force_gb[d][v];
 
-                      grains_data_forces_gbs[offset_ij + dim] +=
-                        force_gb[dim][v];
-                      grains_data_forces_gbs[offset_ji + dim] +=
-                        force_gb[dim][v];
+                      entry[dim] += force_gb[dim][v];
                     }
                 }
             }
@@ -896,7 +915,11 @@ namespace Sintering
 
     AdvectionMechanism<dim, Number, VectorizedArrayType> &advection_mechanism;
 
-    mutable std::vector<Number> grains_data_forces_gbs;
+    // Force and GB area of the touching segment pairs (a, b), a < b, keyed by
+    // (a << 32 | b)
+    mutable std::unordered_map<std::uint64_t,
+                               std::array<Number, n_comp_force_gb>>
+                                pair_data;
     mutable std::vector<Number> grains_data_volumes;
   };
 } // namespace Sintering
